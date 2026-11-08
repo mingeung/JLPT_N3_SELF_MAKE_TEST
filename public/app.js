@@ -227,12 +227,19 @@ function audioLines(q) {
 }
 
 /* ── 공통 조각 ────────────────────────────────────── */
-const MASCOT = `<svg viewBox="0 0 120 120" aria-hidden="true"><path d="M60 12c9 0 15 6 21 16l21 36c6 11 3 27-9 31-10 4-21 5-33 5s-23-1-33-5c-12-4-15-20-9-31l21-36c6-10 12-16 21-16Z" fill="#FFFCEF" stroke="#4A3426" stroke-width="5" stroke-linejoin="round"/><path d="M36 74h48v25c-8 1-16 1-24 1s-16 0-24-1V74Z" fill="#4A3426"/><circle cx="46" cy="55" r="4.5" fill="#4A3426"/><circle cx="74" cy="55" r="4.5" fill="#4A3426"/><path d="M54 60c3 4 9 4 12 0" fill="none" stroke="#4A3426" stroke-width="4" stroke-linecap="round"/><ellipse cx="36" cy="63" rx="6" ry="4" fill="#F7B6C6"/><ellipse cx="84" cy="63" rx="6" ry="4" fill="#F7B6C6"/></svg>`;
 const syncEl = () => `<span id="sync" class="sync"></span>`;
+const ICONS = {
+  home: '<path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/>',
+  practice: '<path d="M14.5 5.5l4 4M5 19l1-4.5L15.5 5a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L9.5 18z"/>',
+  exams: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 10h6M9 14h6M9 18h3"/>',
+  notes: '<path d="M7 3.5h10a1 1 0 0 1 1 1V21l-6-4-6 4V4.5a1 1 0 0 1 1-1z"/>',
+  me: '<path d="M5 20V12M10 20V6M15 20v-9M20 20V4"/>',
+};
 const tabs = cur => `<nav class="tabs">${[['home', '홈'], ['practice', '연습'], ['exams', '모의고사'], ['notes', '오답노트'], ['me', '내 기록']]
-  .map(([k, l]) => `<button class="${cur === k ? 'on' : ''}" data-go="${k}">${l}</button>`).join('')}</nav>`;
+  .map(([k, l]) => `<button class="${cur === k ? 'on' : ''}" data-go="${k}" aria-label="${l}"><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>${l}</button>`).join('')}</nav>`;
 const bar = (r, cls = '') => `<div class="bar ${cls}"><i style="width:${Math.round(r * 100)}%"></i></div>`;
 const pct = r => r == null ? '–' : Math.round(r * 100) + '%';
+const accPill = acc => acc == null ? '' : `<span class="pill ${acc >= .8 ? 'ok' : acc < .6 ? 'no' : ''}">${pct(acc)}</span>`;
 function toast(msg) {
   document.querySelector('.toast')?.remove();
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.append(t);
@@ -255,7 +262,7 @@ function audioHtml(q, disabled) {
     <button class="primary ghost" data-act="showscript">대본으로 풀기</button>${V.showScript ? scriptHtml(q) : ''}`;
   return `<section class="panel"><div class="audio">
     <button class="primary" data-act="play" ${disabled || (!q.au && !TTS.ok) ? 'disabled' : ''}>${TTS.playing ? '■ 멈추기' : disabled ? '재생 완료' : '▶ 듣기'}</button>
-    <button class="speed" data-act="rate">속도 ${TTS.rate}배</button></div>${warn}</section>`;
+    <button class="speed" data-act="rate">${TTS.rate}x</button></div>${warn}</section>`;
 }
 function optsHtml(q, chosen, reveal) {
   const hidden = PART[q.part].spoken && !reveal && !(!q.au && !TTS.ok && V.showScript);
@@ -275,7 +282,7 @@ function explainHtml(q, ok) {
     ${q.tr ? `<details><summary>${q.script ? '대본과 번역' : '번역'}</summary>${q.script ? scriptHtml(q) : ''}<p>${esc(q.tr)}</p></details>` : ''}
     ${g?.tr ? `<details><summary>지문 번역</summary><p>${esc(g.tr)}</p></details>` : ''}
     ${q.v?.length ? `<details open><summary>단어 메모</summary>${vocabHtml(q)}</details>` : ''}
-    <button class="link" data-act="bm" data-id="${q.id}">${store.bookmarks.includes(q.id) ? '★ 저장한 문제' : '☆ 문제 저장'}</button>
+    <button class="bmk" data-act="bm" data-id="${q.id}">${store.bookmarks.includes(q.id) ? '★ 저장한 문제' : '☆ 문제 저장하기'}</button>
   </section>`;
 }
 
@@ -285,15 +292,15 @@ function go(v) { TTS.stop(); V = typeof v === 'string' ? { name: v } : v; render
 
 function vAuth() {
   const up = V.mode === 'signup';
-  return `<div class="scroll"><form class="panel auth" id="authform">
-    <div class="hero">${MASCOT}<div class="bubble"><h1>오니기리 N3</h1><p class="sub">직접 만든 문제로 N3 합격까지</p></div></div>
+  return `<div class="scroll"><form class="auth panel white" id="authform" style="border:0">
+    <div class="brand"><div class="logo">N3</div><h1>오니기리 N3</h1><p class="sub">직접 만든 문제로 N3 합격까지</p></div>
     <div class="seg"><button type="button" class="${up ? '' : 'on'}" data-act="mode" data-m="login">로그인</button><button type="button" class="${up ? 'on' : ''}" data-act="mode" data-m="signup">회원가입</button></div>
-    <label class="field">아이디<input name="u" autocomplete="username" autocapitalize="none" required value="${esc(V.u || '')}"></label>
-    <label class="field">비밀번호${up ? ' (8자 이상)' : ''}<input name="p" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" required></label>
+    <label class="field">아이디<input name="u" autocomplete="username" autocapitalize="none" required value="${esc(V.u || '')}" placeholder="한글·영문·숫자 2~20자"></label>
+    <label class="field">비밀번호<input name="p" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" required ${up ? 'placeholder="8자 이상"' : ''}></label>
     ${up ? `<label class="field">비밀번호 확인<input name="p2" type="password" autocomplete="new-password" required></label><p class="sub">이메일을 받지 않아서 비밀번호를 찾을 수 없어요. 꼭 기억해 주세요.</p>` : ''}
     <p class="err" role="alert">${esc(V.err || '')}</p>
     <button class="primary" ${V.busy ? 'disabled' : ''}>${V.busy ? '잠시만요…' : up ? '가입하고 시작하기' : '로그인'}</button>
-    <button type="button" class="textbtn" data-act="guest">로그인 없이 써보기</button>
+    <button type="button" class="textbtn" data-act="guest">로그인 없이 둘러보기</button>
   </form></div>`;
 }
 
@@ -302,34 +309,37 @@ function vHome() {
   const wrong = wrongIds().length;
   const solved = Object.keys(hist).filter(id => Q[id]).length;
   const todayN = store.attempts.filter(a => dayKey(a.answered_at) === dayKey(Date.now())).length;
-  return `<header class="top"><span class="t">${esc(user ? user.name : '게스트')}</span>${syncEl()}</header>
+  return `<header class="top"><h1>오늘의 학습</h1>${syncEl()}</header>
   <div class="scroll">
-    <div class="hero">${MASCOT}<div class="bubble"><h1>오니기리 N3</h1><p class="sub">오늘 ${todayN}문제 · ${streak()}일 연속</p></div></div>
-    ${user ? '' : `<button class="warnbox" data-act="toauth">지금은 이 기기에만 저장돼요. 로그인하면 지금까지 푼 기록도 계정으로 옮겨져요.</button>`}
+    ${user ? `<p class="sub" style="margin-top:-8px">${esc(user.name)}님, 오늘도 한 걸음씩 가볼까요?</p>` : `<button class="notice" data-act="toauth"><span>로그인하면 기록이 계정에 저장돼요</span><span>›</span></button>`}
     <section class="panel">
-      <div class="row"><span>다음 시험 ${date.getMonth() + 1}/${date.getDate()}</span><span class="big">D-${days}</span></div>
-      <div class="row"><span class="sub">푼 문제</span><span>${solved} / ${QS.length}</span></div>${bar(solved / QS.length)}
+      <div class="dday"><div><p class="sub">다음 JLPT</p><p style="font-weight:600">${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}</p></div><span class="big">D-${days}</span></div>
+      <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.length} 문제</span></div></div>
+      ${bar(solved / QS.length)}
       <button class="primary" data-act="today">오늘의 문제 풀기</button>
     </section>
     <div class="grid">
-      <button class="part" data-go="notes"><b>오답노트</b><span>복습할 문제 ${wrong}개</span></button>
-      <button class="part" data-go="exams"><b>모의고사</b><span>실전 구성 ${EXAMS.length}회분</span></button>
+      <button class="part big2" data-go="notes">${wrong ? `<span class="pill no">${wrong}</span>` : ''}<b>오답노트</b><span>${wrong ? `복습할 문제 ${wrong}개` : '틀린 문제가 없어요'}</span></button>
+      <button class="part big2" data-go="exams"><b>모의고사</b><span>실전 구성 ${EXAMS.length}회분</span></button>
     </div>
-    <h2 class="lbl">영역별 정답률</h2>
+    <div class="lblrow"><h2 class="lbl">영역별 정답률</h2><button class="link sub" data-go="practice">연습하기 ›</button></div>
     <section class="panel">${AREAS.map(a => {
       const ps = PARTS.filter(p => p.area === a).map(p => partStat(p.key));
       const seen = ps.reduce((s, x) => s + x.seen, 0), acc = seen ? ps.reduce((s, x) => s + (x.acc || 0) * x.seen, 0) / seen : null;
-      return `<div class="row"><span>${a}</span><span class="sub">${pct(acc)}</span></div>${bar(acc || 0, 'blue')}`;
+      return `<div class="row"><span style="font-weight:600">${a}</span><span class="sub">${pct(acc)}</span></div>${bar(acc || 0, 'blue')}`;
     }).join('')}</section>
   </div>${tabs('home')}`;
 }
 
 function vPractice() {
-  return `<header class="top"><h1>유형별 연습</h1>${syncEl()}</header><div class="scroll">${AREAS.map(a => `
-    <h2 class="lbl">${a}</h2><div class="grid">${PARTS.filter(p => p.area === a).map(p => {
+  const area = V.area || '전체';
+  const list = PARTS.filter(p => area === '전체' || p.area === area);
+  return `<header class="top"><h1>유형별 연습</h1>${syncEl()}</header><div class="scroll">
+    <div class="chips">${['전체', ...AREAS].map(a => `<button class="chip ${a === area ? 'on' : ''}" data-area="${a}">${a}</button>`).join('')}</div>
+    <div class="grid">${list.map(p => {
       const s = partStat(p.key);
-      return `<button class="part" data-part="${p.key}"><b>${esc(p.name)}</b><span class="ja">${esc(p.ja)}</span><span>${s.seen}/${s.total} · 정답률 ${pct(s.acc)}</span>${bar(s.seen / (s.total || 1))}</button>`;
-    }).join('')}</div>`).join('')}</div>${tabs('practice')}`;
+      return `<button class="part" data-part="${p.key}">${accPill(s.acc)}<b>${esc(p.name)}</b><span class="ja">${esc(p.ja)}</span><span>${s.seen} / ${s.total}</span>${bar(s.seen / (s.total || 1))}</button>`;
+    }).join('')}</div></div>${tabs('practice')}`;
 }
 
 function startQuiz(ids, title, mode = 'drill') {
@@ -341,33 +351,36 @@ function vQuiz() {
   const q = Q[V.ids[V.i]], p = PART[q.part], chosen = V.res[q.id]?.pick, done = chosen != null;
   const two = !!q.gid;
   $app.classList.toggle('wide', two);
-  const side = `<div class="side"><section class="panel">
+  const side = `<div class="side"><section class="qcard">
       <p class="ins ja" lang="ja">${esc(p.ins)}</p>
       ${q.q ? `<p class="qtext" lang="ja">${q.q}</p>` : ''}
       ${optsHtml(q, chosen, done ? 'lock' : false)}</section>
       ${done ? explainHtml(q, chosen === q.a) : ''}</div>`;
-  return `<header class="top"><button class="link" data-act="quit">← 그만하기</button><span class="t">${esc(V.title)} ${V.i + 1}/${V.ids.length}</span>${syncEl()}</header>
-  <div class="scroll">${q.script ? audioHtml(q, false) : ''}<div class="layout ${two ? 'two' : ''}">${passageHtml(q)}${side}</div></div>
+  return `<header class="top sm"><button class="link" data-act="quit">✕ 닫기</button><span class="t">${esc(V.title)} · ${V.i + 1}/${V.ids.length}</span>${syncEl()}</header>
+  <div class="bar blue" style="border-radius:0;height:3px;flex:none"><i style="width:${(V.i + (done ? 1 : 0)) / V.ids.length * 100}%;border-radius:0"></i></div>
+  <div class="scroll" style="padding-top:18px">${q.script ? audioHtml(q, false) : ''}<div class="layout ${two ? 'two' : ''}">${passageHtml(q)}${side}</div></div>
   ${done ? `<div class="foot"><button class="primary" data-act="next">${V.i + 1 < V.ids.length ? '다음 문제' : '결과 보기'}</button></div>` : ''}`;
 }
 function vResult() {
   const rows = Object.entries(V.res), right = rows.filter(([, r]) => r.ok).length;
   const wrong = rows.filter(([, r]) => !r.ok).map(([id]) => id);
   return `<header class="top"><h1>${esc(V.title)} 결과</h1>${syncEl()}</header><div class="scroll">
-    <div class="hero">${MASCOT}<div class="bubble"><p class="big">${right}<small> / ${rows.length}</small></p><p class="sub">${right === rows.length ? '전부 맞혔어요!' : wrong.length + '문제는 오답노트에 넣어 뒀어요'}</p></div></div>
+    <section class="panel"><p class="sub">맞힌 문제</p><p class="big">${right}<small> / ${rows.length}</small></p>${bar(rows.length ? right / rows.length : 0, 'blue')}
+      <p class="sub">${right === rows.length ? '전부 맞혔어요!' : wrong.length + '문제는 오답노트에 넣어 뒀어요'}</p></section>
     <div class="btns">${wrong.length ? `<button class="primary" data-act="retry">틀린 문제 다시</button>` : ''}<button class="primary ghost" data-go="home">홈으로</button></div>
   </div>`;
 }
 
 function vNotes() {
   const ids = wrongIds(), bm = store.bookmarks.filter(id => Q[id]);
-  const row = id => { const q = Q[id]; return `<button class="part" data-review="${id}"><b>${esc(PART[q.part].name)}</b><span class="ja">${esc((q.q || (q.script && q.script[0].t) || GROUPS[q.gid]?.title || '').replace(/<[^>]+>/g, '').slice(0, 40))}</span></button>`; };
+  const row = (id, pill) => { const q = Q[id]; return `<button class="part item" data-review="${id}">${pill}<span>${esc(PART[q.part].name)}</span><span class="ja">${esc((q.q || (q.script && q.script[0].t) || GROUPS[q.gid]?.title || '').replace(/<rt>.*?<\/rt>|<[^>]+>/g, '').slice(0, 40))}</span></button>`; };
+  const misses = id => (hist[id] || []).filter(x => !x).length;
   return `<header class="top"><h1>오답노트</h1>${syncEl()}</header><div class="scroll">
-    <section class="panel"><p class="sub">틀린 문제는 2번 연속 맞히면 빠져나가요.</p>
-      <button class="primary" data-act="revall" ${ids.length ? '' : 'disabled'}>복습 시작 (${ids.length}문제)</button></section>
-    <div class="list">${ids.slice(0, 60).map(row).join('')}</div>
-    <h2 class="lbl">저장한 문제 ${bm.length}개</h2>
-    ${bm.length ? `<button class="primary ghost" data-act="bmall">저장한 문제 풀기</button><div class="list">${bm.slice(0, 60).map(row).join('')}</div>` : ''}
+    <section class="panel"><div class="row"><div><p style="font-weight:700;font-size:17px">복습할 문제 ${ids.length}개</p><p class="sub">2번 연속 맞히면 목록에서 빠져요</p></div></div>
+      <button class="primary" data-act="revall" ${ids.length ? '' : 'disabled'}>복습 시작</button></section>
+    <div class="list">${ids.slice(0, 60).map(id => row(id, `<span class="pill no">${misses(id)}번 틀림</span>`)).join('')}</div>
+    <div class="lblrow"><h2 class="lbl">저장한 문제 ${bm.length}개</h2>${bm.length ? `<button class="link sub" data-act="bmall">모두 풀기 ›</button>` : ''}</div>
+    ${bm.length ? `<div class="list">${bm.slice(0, 60).map(id => row(id, '<span class="pill ac">저장</span>')).join('')}</div>` : `<p class="sub">해설 화면에서 ☆를 누르면 여기에 모여요.</p>`}
   </div>${tabs('notes')}`;
 }
 
@@ -448,7 +461,7 @@ function vMe() {
   const max = Math.max(1, ...days);
   return `<header class="top"><h1>내 기록</h1>${syncEl()}</header><div class="scroll">
     <section class="panel"><div class="row"><span>최근 14일</span><span class="sub">${store.attempts.length}회 풀이 · ${streak()}일 연속</span></div>
-      <div class="days">${days.map(n => `<div class="${n ? '' : 'none'}" style="height:${Math.max(4, n / max * 100)}%" title="${n}문제"></div>`).join('')}</div></section>
+      <div class="days">${days.map(n => `<div class="${n ? '' : 'none'}" style="height:${Math.max(4, n / max * 100)}%" title="${n}문제"></div>`).join('')}</div><div class="daylbl"><span>2주 전</span><span>오늘</span></div></section>
     <h2 class="lbl">유형별</h2><section class="panel">${PARTS.map(p => { const s = partStat(p.key); return `<div class="row"><span>${esc(p.name)}</span><span class="sub">${s.seen}/${s.total} · ${pct(s.acc)}</span></div>`; }).join('')}</section>
     <h2 class="lbl">계정</h2><section class="panel">
       ${user ? `<p>${esc(user.name)} 님</p>
@@ -555,6 +568,7 @@ document.addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b || b.disabled) return;
   const d = b.dataset;
   if (d.go) go(d.go);
+  else if (d.area) { V.area = d.area; render(); }
   else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name);
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');

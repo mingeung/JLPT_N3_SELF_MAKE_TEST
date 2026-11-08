@@ -24,3 +24,9 @@
 
 ## 배포
 정적 호스팅이면 어디든 된다. Vercel: 새 프로젝트로 이 폴더를 올리고 Output Directory를 `public`으로 둔다.
+
+## 청해 음성
+Google Cloud Text-to-Speech(Chirp 3 HD)로 미리 만든 파일(`public/audio/`)을 재생한다. 키는 `.env`의 `GOOGLE_TTS_API_KEY`(git 제외)이며 앱에는 들어가지 않는다.
+대본을 고친 뒤:
+    python3 tools/make_audio.py && python3 tools/build.py
+바뀐 문항만 다시 합성한다. 파일이 없거나 재생에 실패하면 기기 음성으로 대신 읽는다.
