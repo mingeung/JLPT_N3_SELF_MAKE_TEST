@@ -1,0 +1,9 @@
+{
+  "name": "오니기리 N3",
+  "short_name": "오니기리 N3",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#FFE27A",
+  "theme_color": "#FFE27A",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
