@@ -71,10 +71,12 @@ function paintSync() {
 addEventListener('online', flush);
 setInterval(() => { if (store.queue.length) flush(); }, 30000);
 
-async function fetchAll(table, order) {
+/* 같은 계정을 N4 앱도 쓴다. N4 기록(문제 id 'n4-…', 모의고사 회차 11 이상)은 여기서 읽거나 지우지 않는다. */
+const N3_ONLY = q => q.not('question_id', 'like', 'n4-%');
+async function fetchAll(table, order, only) {
   const out = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from(table).select('*').order(order, { ascending: true }).range(from, from + 999);
+    const { data, error } = await only(sb.from(table).select('*')).order(order, { ascending: true }).range(from, from + 999);
     if (error) throw error;
     out.push(...data); if (data.length < 1000) return out;
   }
@@ -94,7 +96,7 @@ async function loadAccount() {
   }
   try {
     await flush();
-    const [a, b, e] = await Promise.all([fetchAll('attempts', 'answered_at'), fetchAll('bookmarks', 'created_at'), fetchAll('exam_results', 'finished_at')]);
+    const [a, b, e] = await Promise.all([fetchAll('attempts', 'answered_at', N3_ONLY), fetchAll('bookmarks', 'created_at', N3_ONLY), fetchAll('exam_results', 'finished_at', q => q.lte('exam_no', 10))]);
     const pendA = store.queue.filter(o => o.t === 'attempt').map(o => o.row);
     const pendE = store.queue.filter(o => o.t === 'exam').map(o => o.row);
     store.attempts = [...a, ...pendA];
@@ -551,13 +553,13 @@ const ACT = {
     await sb.auth.signOut(); user = null; store = emptyStore(); hist = {}; EX = null; go({ name: 'auth' });
   },
   async reset() {
-    if (!confirm('풀이 기록과 모의고사 결과를 모두 지울까요? 되돌릴 수 없어요.')) return;
-    const r = await Promise.all([sb.from('attempts').delete().eq('user_id', user.id), sb.from('exam_results').delete().eq('user_id', user.id)]);
+    if (!confirm('N3 풀이 기록과 모의고사 결과를 모두 지울까요? 되돌릴 수 없어요.')) return;
+    const r = await Promise.all([N3_ONLY(sb.from('attempts').delete().eq('user_id', user.id)), sb.from('exam_results').delete().eq('user_id', user.id).lte('exam_no', 10)]);
     if (r.some(x => x.error)) return toast('지우지 못했어요');
     store.attempts = []; store.exams = []; store.queue = store.queue.filter(o => o.t.startsWith('bm')); persist(); indexAttempts(); toast('기록을 지웠어요'); render();
   },
   async delacc() {
-    if (!confirm('계정과 모든 기록을 삭제할까요? 되돌릴 수 없어요.')) return;
+    if (!confirm('계정을 삭제하면 N3·N4 앱의 기록이 모두 지워져요. 삭제할까요? 되돌릴 수 없어요.')) return;
     const { data: { session } } = await sb.auth.getSession();
     const { error } = await sb.functions.invoke('account', { body: { action: 'delete' }, headers: { Authorization: `Bearer ${session.access_token}` } });
     if (error) return toast('삭제하지 못했어요');
