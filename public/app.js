@@ -1,4 +1,4 @@
-/* 오니기리 N3 — 학습 기록은 이 기기에 먼저 쓰고, 로그인되어 있으면 Supabase로 보낸다. */
+/* 능이 JLPT N3 — 학습 기록은 이 기기에 먼저 쓰고, 로그인되어 있으면 Supabase로 보낸다. */
 const SB_URL = 'https://cdmfglqqhqfjhblaikdz.supabase.co';
 const SB_KEY = 'sb_publishable_NXzZ41oAbjX6jckVqkfqMg_PGcL-BHN'; // 공개용 키. 접근은 RLS가 막는다.
 const sb = supabase.createClient(SB_URL, SB_KEY);
@@ -293,7 +293,7 @@ function go(v) { TTS.stop(); V = typeof v === 'string' ? { name: v } : v; render
 function vAuth() {
   const up = V.mode === 'signup';
   return `<div class="scroll"><form class="auth panel white" id="authform" style="border:0">
-    <div class="brand"><div class="logo">N3</div><h1>오니기리 N3</h1><p class="sub">직접 만든 문제로 N3 합격까지</p></div>
+    <div class="brand"><div class="logo">N3</div><h1>능이 JLPT N3</h1><p class="sub">직접 만든 문제로 N3 합격까지</p></div>
     <div class="seg"><button type="button" class="${up ? '' : 'on'}" data-act="mode" data-m="login">로그인</button><button type="button" class="${up ? 'on' : ''}" data-act="mode" data-m="signup">회원가입</button></div>
     <label class="field">아이디<input name="u" autocomplete="username" autocapitalize="none" required value="${esc(V.u || '')}" placeholder="한글·영문·숫자 2~20자"></label>
     <label class="field">비밀번호<input name="p" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" required ${up ? 'placeholder="8자 이상"' : ''}></label>
