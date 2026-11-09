@@ -222,9 +222,26 @@ def main():
         for p in PARTS:
             for u in pools[p[0]][no * p[7]:(no + 1) * p[7]]:
                 sec[p[8]].extend(by_unit[p[0]][u])
-        exams.append(dict(no=no + 1, sec=sec))
+        exams.append(dict(no=no + 1, sec=sec, label=f"모의고사 {no + 1}회", minutes=140))
 
     print("파트별 문항:", dict(Counter(q["part"] for q in all_q)))
+    # 미니 모의고사: 같은 교시 구성을 약 1/3 분량으로. 정식 회차에 안 쓴 문제를 먼저 쓰고, 모자라면 나머지에서 채운다.
+    MINI, MINI_N = {'kanji': 3, 'hyoki': 2, 'bunmyaku': 4, 'iikae': 2, 'yoho': 2, 'bunpo1': 5, 'narabe': 2, 'tanbun': 1, 'chubun': 1, 'kadai': 2, 'point': 2, 'gaiyo': 1, 'hatsuwa': 1, 'sokuji': 3}, 5
+    used = {u for e in exams for sec in e["sec"] for u in sec}
+    for k in range(MINI_N):
+        sec = [[], [], []]
+        for p in PARTS:
+            want = MINI.get(p[0], 0)
+            if not want:
+                continue
+            u = sorted(by_unit.get(p[0], {}).keys())
+            random.Random("mini:" + p[0]).shuffle(u)
+            u = [x for x in u if by_unit[p[0]][x][0] not in used] + [x for x in u if by_unit[p[0]][x][0] in used]
+            for x in [u[(k * want + j) % len(u)] for j in range(want)]:
+                sec[p[8]].extend(by_unit[p[0]][x])
+        exams.append(dict(no=n_exam + k + 1, sec=sec, mini=True, label=f"미니 모의고사 {k + 1}회",
+                          min=[10, 25], minutes=50))
+    print("미니 모의고사", MINI_N, "회", [len(sum(e["sec"], [])) for e in exams if e.get("mini")])
     print("합계", len(all_q), "| 지문", len(groups), "| 모의고사", n_exam, "회", [len(sum(e["sec"], [])) for e in exams])
     if missing_enrich:
         print("보강 안 됨:", dict(missing_enrich))

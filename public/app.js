@@ -3,6 +3,9 @@ const SB_URL = 'https://cdmfglqqhqfjhblaikdz.supabase.co';
 const SB_KEY = 'sb_publishable_NXzZ41oAbjX6jckVqkfqMg_PGcL-BHN'; // 공개용 키. 접근은 RLS가 막는다.
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const { parts: PARTS, q: QS, g: GROUPS, exams: EXAMS } = window.N3;
+const examOf = no => EXAMS.find(x => x.no === no);
+const examName = no => examOf(no)?.label || `모의고사 ${no}회`;
+const examMins = e => e.min || SECTIONS.slice(0, 2).map(s => s.min);
 const PART = Object.fromEntries(PARTS.map(p => [p.key, p]));
 const Q = Object.fromEntries(QS.map(q => [q.id, q]));
 const AREAS = ['문자·어휘', '문법', '독해', '청해'];
@@ -375,7 +378,7 @@ function vHome() {
     </section>
     <div class="grid">
       <button class="part big2" data-go="notes">${wrong ? `<span class="pill no">${wrong}</span>` : ''}<b>오답노트</b><span>${wrong ? `복습할 문제 ${wrong}개` : '틀린 문제가 없어요'}</span></button>
-      <button class="part big2" data-go="exams"><b>모의고사</b><span>실전 구성 ${EXAMS.length}회분</span></button>
+      <button class="part big2" data-go="exams"><b>모의고사</b><span>정식 ${EXAMS.filter(e => !e.mini).length}회 · 미니 ${EXAMS.filter(e => e.mini).length}회</span></button>
     </div>
     <div class="lblrow"><h2 class="lbl">영역별 정답률</h2><button class="link sub" data-go="practice">연습하기 ›</button></div>
     <section class="panel">${AREAS.map(a => {
@@ -446,13 +449,18 @@ const scoreOf = (c, t) => t ? Math.round(c / t * 60) : 0;
 function vExams() {
   EX = EX || lsGet(examKey());
   return `<header class="top"><h1>모의고사</h1>${syncEl()}</header><div class="scroll">
-    ${EX ? `<section class="panel"><p>${EX.no}회 시험을 풀던 중이에요.</p><div class="btns"><button class="primary" data-act="exresume">이어서 풀기</button><button class="primary ghost" data-act="exdrop">버리기</button></div></section>` : ''}
-    <p class="sub">실제 시험과 비슷한 구성이에요. 언어지식 30분, 문법·독해 70분이 지나면 다음 교시로 넘어가고, 청해는 문제당 한 번만 들을 수 있어요. 점수는 정답 비율로 어림한 값이고 실제 시험의 채점 방식과는 달라요.</p>
-    <div class="list">${EXAMS.map(e => {
-      const past = store.exams.filter(x => x.exam_no === e.no).sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at))[0];
-      return `<button class="part" data-exam="${e.no}" ${EX ? 'disabled' : ''}><b>모의고사 ${e.no}회</b><span>${e.sec.flat().length}문항 · 약 140분</span><span>${past ? `최근 추정 ${total(past)}점 / 180` : '아직 안 풀었어요'}</span></button>`;
-    }).join('')}</div>
-    ${store.exams.length ? `<h2 class="lbl">지난 결과</h2><div class="list">${[...store.exams].sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at)).slice(0, 10).map(x => `<div class="part"><b>${x.exam_no}회 · 추정 ${total(x)}점</b><span>${dayKey(x.finished_at)} · ${passed(x) ? '합격권' : '불합격권'}</span></div>`).join('')}</div>` : ''}
+    ${EX ? `<section class="panel"><p>${esc(examName(EX.no))}를 풀던 중이에요.</p><div class="btns"><button class="primary" data-act="exresume">이어서 풀기</button><button class="primary ghost" data-act="exdrop">버리기</button></div></section>` : ''}
+    <p class="sub">정식 모의고사는 실제 시험과 비슷한 구성이에요. 언어지식 30분, 문법·독해 70분이 지나면 다음 교시로 넘어가고, 청해는 문제당 한 번만 들을 수 있어요. 점수는 정답 비율로 어림한 값이고 실제 시험의 채점 방식과는 달라요.</p>
+    ${['mini', 'full'].map(kind => {
+      const list = EXAMS.filter(e => kind === 'mini' ? e.mini : !e.mini);
+      return `<h2 class="lbl">${kind === 'mini' ? '미니 모의고사' : '정식 모의고사'}</h2>
+      <p class="sub" style="margin:-6px 0 4px">${kind === 'mini' ? `실력 점검용 짧은 시험이에요. 세 영역을 1/3 분량으로, 약 ${list[0]?.minutes || ''}분 걸려요.` : '실제 시험과 같은 문항 수예요.'}</p>
+      <div class="list">${list.map(e => {
+        const past = store.exams.filter(x => x.exam_no === e.no).sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at))[0];
+        return `<button class="part" data-exam="${e.no}" ${EX ? 'disabled' : ''}><b>${esc(e.label)}</b><span>${e.sec.flat().length}문항 · 약 ${e.minutes}분</span><span>${past ? `최근 추정 ${total(past)}점 / 180` : '아직 안 풀었어요'}</span></button>`;
+      }).join('')}</div>`;
+    }).join('')}
+    ${store.exams.length ? `<h2 class="lbl">지난 결과</h2><div class="list">${[...store.exams].sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at)).slice(0, 10).map(x => `<div class="part"><b>${esc(examName(x.exam_no))} · 추정 ${total(x)}점</b><span>${dayKey(x.finished_at)} · ${passed(x) ? '합격권' : '불합격권'}</span></div>`).join('')}</div>` : ''}
   </div>${tabs('exams')}`;
 }
 const scores = x => [scoreOf(x.lang_correct, x.lang_total), scoreOf(x.read_correct, x.read_total), scoreOf(x.listen_correct, x.listen_total)];
@@ -461,20 +469,21 @@ const passed = x => total(x) >= PASS_TOTAL && scores(x).every(s => s >= PASS_SEC
 
 function startExam(no) {
   const e = EXAMS.find(x => x.no === no);
-  EX = { no, sec: 0, i: 0, ans: {}, played: {}, sections: e.sec, deadline: Date.now() + SECTIONS[0].min * 6e4 };
+  const mins = [...examMins(e), 0];
+  EX = { no, sec: 0, i: 0, ans: {}, played: {}, sections: e.sec, mins, deadline: Date.now() + mins[0] * 6e4 };
   lsSet(examKey(), EX); go('exam');
 }
 function nextSection() {
   TTS.stop();
   if (EX.sec >= 2) return finishExam();
-  EX.sec++; EX.i = 0; EX.deadline = SECTIONS[EX.sec].min ? Date.now() + SECTIONS[EX.sec].min * 6e4 : null;
+  EX.sec++; EX.i = 0; const m = (EX.mins || SECTIONS.map(s => s.min))[EX.sec]; EX.deadline = m ? Date.now() + m * 6e4 : null;
   lsSet(examKey(), EX); go('exam');
 }
 function vExam() {
   const ids = EX.sections[EX.sec], q = Q[ids[EX.i]], p = PART[q.part], chosen = EX.ans[q.id];
   const answered = ids.filter(id => EX.ans[id] != null).length;
   $app.classList.toggle('wide', !!q.gid);
-  return `<header class="top"><span class="t">${EX.no}회 ${EX.sec + 1}교시 · ${EX.i + 1}/${ids.length}</span><span id="timer" class="timer"></span></header>
+  return `<header class="top"><span class="t">${esc(examName(EX.no))} ${EX.sec + 1}교시 · ${EX.i + 1}/${ids.length}</span><span id="timer" class="timer"></span></header>
   <div class="scroll">
     ${q.script ? audioHtml(q, EX.played[q.id]) : ''}
     <div class="layout ${q.gid ? 'two' : ''}">${passageHtml(q)}<div class="side"><section class="panel">
@@ -503,7 +512,7 @@ function vExamResult() {
   const x = V.row, [a, b, c] = scores(x), t = a + b + c, pass = passed(x);
   const wrong = V.review.filter(r => !r.ok);
   const low = n => n < PASS_SECTION ? 'low' : '';
-  return `<header class="top"><h1>모의고사 ${x.exam_no}회 결과</h1>${syncEl()}</header><div class="scroll">
+  return `<header class="top"><h1>${esc(examName(x.exam_no))} 결과</h1>${syncEl()}</header><div class="scroll">
     <section class="panel"><div class="row"><span>${pass ? '합격권이에요' : '조금 더 해봐요'}</span><span class="big">${t}<small> / 180</small></span></div>
       <div class="score"><div><b class="${low(a)}">${a}</b><span>언어지식 ${x.lang_correct}/${x.lang_total}</span></div><div><b class="${low(b)}">${b}</b><span>독해 ${x.read_correct}/${x.read_total}</span></div><div><b class="${low(c)}">${c}</b><span>청해 ${x.listen_correct}/${x.listen_total}</span></div></div>
       <p class="sub">합격 기준은 총점 ${PASS_TOTAL}점 이상, 영역별 ${PASS_SECTION}점 이상이에요. 위 점수는 정답 비율로 계산한 추정치예요.</p></section>
@@ -639,7 +648,7 @@ document.addEventListener('click', e => {
   else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name, 'drill', { part: d.part });
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');
-  else if (d.exam) { if (confirm(`모의고사 ${d.exam}회를 시작할까요? 약 140분이 걸려요.`)) startExam(+d.exam); }
+  else if (d.exam) { const e = examOf(+d.exam); if (confirm(`${e.label}를 시작할까요? 약 ${e.minutes}분이 걸려요.`)) startExam(+d.exam); }
   else if (d.jump != null) { EX.i = +d.jump; TTS.stop(); lsSet(examKey(), EX); render(); }
   else if (d.act) ACT[d.act]?.(b);
 });

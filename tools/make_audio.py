@@ -5,7 +5,7 @@
 - 문항마다 남녀 목소리를 바꿔 실제 시험처럼 여러 사람이 말하게 한다.
 사용: python3 tools/make_audio.py [--voices] [--only kadai-001,...] [--engine say(개발용 시험)]
 """
-import base64, hashlib, io, json, os, random, subprocess, sys, tempfile, urllib.request, wave
+import array, base64, hashlib, io, json, os, random, re, subprocess, sys, tempfile, urllib.request, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,11 +57,41 @@ def say(text, voice, key):  # 개발용: 파이프라인 시험에만 쓰고 배
             return w.readframes(w.getnframes())
 
 
+# 짧은 감탄사 뒤 「、」는 합성할 때 쉼 없이 붙어 「あ、待って」가 「あまって」처럼 들린다(실측: 쉼 0.15초 이상 3할 남짓).
+# 음성용 글자에서만 「。」로 바꾸면 거의 항상 쉬고(41/42), 그 쉼이 길어 긴 쉼을 줄인다. 화면의 대본 글자는 그대로다.
+INTERJ = "あ|ああ|あっ|あれ|あら|え|えっ|ええ|はい|いいえ|いえ|いや|いやあ|うん|ううん|うーん|じゃあ|じゃ|ねえ|へえ|ほら|さあ|まあ|よし|おや|あのう|あの|そう|そうか"
+INTERJ_RE = re.compile(rf"(^|[。？！])({INTERJ})、")
+PAUSE_TO = 0.32
+
+
+def tts_text(t):
+    return INTERJ_RE.sub(lambda m: m.group(1) + m.group(2) + "。", t)
+
+
+def shorten_pauses(pcm, thr=500, longer=0.4):
+    """「。」로 바꾼 줄은 쉼이 0.6~1초로 길어진다. 소리 사이의 긴 쉼을 모두 PAUSE_TO 초로 줄인다."""
+    a = array.array("h", pcm); fr = 240
+    voiced = [k for k in range(0, len(a), fr) if max(abs(v) for v in a[k:k + fr]) >= thr]
+    if not voiced: return pcm
+    out, keep, prev = array.array("h", a[:voiced[0]]), int(RATE * PAUSE_TO), voiced[0]
+    for k in voiced[1:]:
+        if k - prev > RATE * longer:  # prev 프레임 끝 ~ k 사이가 긴 쉼
+            out += a[prev:prev + fr + keep // 2] + a[k - keep // 2:k]
+        else:
+            out += a[prev:k]
+        prev = k
+    out += a[prev:]
+    return out.tobytes()
+
+
 def lines_of(q, part):
     out = [{"sp": l["sp"], "t": l["t"]} for l in q["script"]]  # 음성에 쓰는 것만 (후리가나·번역은 제외)
     if part in SPOKEN:
         for i, c in enumerate(q["c"]):
             out.append({"sp": "N", "t": f"{i + 1}ばん。{c}", "opt": True})
+    for l in out:
+        if tts_text(l["t"]) != l["t"]:
+            l["say"] = tts_text(l["t"]); l["v"] = 2  # 바뀐 줄만 표시해, 해당 문항만 다시 만든다
     return out
 
 
@@ -96,12 +126,16 @@ def main():
             prev = None
             for l in lines:
                 voice = cast[l["sp"]]
-                h = hashlib.sha1(f"{engine.__name__}|{voice}|{l['t']}".encode()).hexdigest()
+                text = l.get("say", l["t"])
+                h = hashlib.sha1(f"{engine.__name__}|{voice}|{text}".encode()).hexdigest()
                 cf = CACHE / f"{h}.pcm"
                 if not cf.exists():
-                    cf.write_bytes(engine(l["t"], voice, key)); calls += 1
+                    cf.write_bytes(engine(text, voice, key)); calls += 1
                 gap = GAP_OPT if l.get("opt") else GAP_TURN if prev is not None else 0
-                pcm += b"\0\0" * int(RATE * gap) + cf.read_bytes()
+                body = cf.read_bytes()
+                if "say" in l:
+                    body = shorten_pauses(body)
+                pcm += b"\0\0" * int(RATE * gap) + body
                 prev = l["sp"]
             pcm += b"\0\0" * int(RATE * 0.5)
             with tempfile.TemporaryDirectory() as d:
