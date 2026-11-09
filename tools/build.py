@@ -55,6 +55,63 @@ def check_html(where, text):
     if p.bad or p.stack:
         errors.append(f"{where}: 허용되지 않거나 닫히지 않은 태그 {sorted(p.bad)} {p.stack}")
 
+RUBY = re.compile(r"\{([^{}|]+)\|([^{}|]+)\}")
+plain_of = lambda s: RUBY.sub(lambda m: m.group(1), s)
+strip_tags = lambda s: re.sub(r"<[^>]+>", "", re.sub(r"<rt>.*?</rt>", "", s or ""))
+missing_enrich = Counter()
+
+
+def ruby_html(s):
+    out, last = [], 0
+    for m in RUBY.finditer(s):
+        out.append(html.escape(s[last:m.start()], quote=False))
+        out.append(f"<ruby>{html.escape(m.group(1), quote=False)}<rt>{html.escape(m.group(2), quote=False)}</rt></ruby>")
+        last = m.end()
+    out.append(html.escape(s[last:], quote=False))
+    return "".join(out)
+
+
+def check_ruby(where, s):
+    if re.search(r"[{}|]", RUBY.sub("", s)):
+        errors.append(f"보강: {where}: 후리가나 괄호 형식 오류 {s[:40]}")
+    for m in RUBY.finditer(s):
+        if not re.fullmatch(r"[0-9０-９]*[\u4e00-\u9fff々〆ヶ]+", m.group(1)) or not re.fullmatch(r"[ぁ-ゖー]+", m.group(2)):
+            errors.append(f"보강: {where}: 후리가나 글자 오류 {{{m.group(1)}|{m.group(2)}}}")
+    if re.search(r"[\u4e00-\u9fff々]", RUBY.sub("", s)):
+        errors.append(f"보강: {where}: 후리가나 없는 한자 {RUBY.sub('', s)[:40]}")
+    if "<" in s:
+        errors.append(f"보강: {where}: HTML 태그가 들어 있음")
+
+
+def check_enrich(q, part):
+    i = q["id"]
+    keys = ("fr", "fk", "cr", "cm", "cn")
+    if not any(k in q for k in keys):
+        missing_enrich[part] += 1
+        return
+    for k in keys:
+        if k not in q:
+            return errors.append(f"보강: {i}: {k} 없음")
+    n = len(q["c"])
+    for k in ("cr", "cm", "cn"):
+        if not isinstance(q[k], list) or len(q[k]) != n or not all(isinstance(x, str) for x in q[k]):
+            return errors.append(f"보강: {i}: {k} 개수가 선지와 다름")
+    if not all(x.strip() for x in q["cm"] + q["cn"]):
+        errors.append(f"보강: {i}: 빈 뜻/설명")
+    check_ruby(i + ".fr", q["fr"])
+    if q["fr"] and not q["fk"]:
+        errors.append(f"보강: {i}: fk 없음")
+    for j, (c, r) in enumerate(zip(q["c"], q["cr"])):
+        check_ruby(f"{i}.cr[{j}]", r)
+        if plain_of(r) != strip_tags(c):
+            errors.append(f"보강: {i}.cr[{j}] 원래 선지와 다름\n   {plain_of(r)}\n   {strip_tags(c)}")
+    for j, l in enumerate(q.get("script") or []):
+        if "r" not in l or "k" not in l or not l["k"].strip():
+            errors.append(f"보강: {i}: 대본 {j}번 줄에 r/k 없음"); continue
+        check_ruby(f"{i}.script[{j}]", l["r"])
+        if plain_of(l["r"]) != l["t"]:
+            errors.append(f"보강: {i}: 대본 {j}번 줄 r이 t와 다름\n   {plain_of(l['r'])}\n   {l['t']}")
+
 
 def check_q(q, part, spoken, gid=None):
     i = q.get("id", "?")
@@ -121,12 +178,19 @@ def main():
                     errors.append(f"{q.get('id')}: id 중복")
                 seen.add(q.get("id"))
                 check_q(q, key, spoken, gid)
+                if q.get("c"):
+                    check_enrich(q, key)
                 if "c" not in q or len(q["c"]) < 3:
                     continue
                 rng = random.Random("n3:" + q["id"])
                 order = list(range(len(q["c"])))
                 rng.shuffle(order)
                 o = dict(q, part=key, c=[q["c"][k] for k in order], a=order.index(0))
+                if "cr" in q and len(q["cr"]) == len(q["c"]):
+                    o.update(fr=ruby_html(q["fr"]), cr=[ruby_html(q["cr"][k]) for k in order],
+                             cm=[q["cm"][k] for k in order], cn=[q["cn"][k] for k in order])
+                if q.get("script"):
+                    o["script"] = [dict(l, r=ruby_html(l["r"])) if "r" in l else l for l in q["script"]]
                 if q.get("seq"):
                     o["seq"] = [order.index(k) for k in q["seq"]]
                 if gid:
@@ -162,12 +226,14 @@ def main():
 
     print("파트별 문항:", dict(Counter(q["part"] for q in all_q)))
     print("합계", len(all_q), "| 지문", len(groups), "| 모의고사", n_exam, "회", [len(sum(e["sec"], [])) for e in exams])
+    if missing_enrich:
+        print("보강 안 됨:", dict(missing_enrich))
     print("정답 위치 분포:", dict(sorted(Counter(q["a"] for q in all_q).items())))
     for w in warnings[:40]:
         print("주의:", w)
     if errors:
         print(f"\n오류 {len(errors)}건")
-        for e in errors[:60]:
+        for e in errors[:400]:
             print(" -", e)
         sys.exit(1)
     if "--check" not in sys.argv:

@@ -34,11 +34,11 @@ function nextExamDate() {
 
 /* ── 저장 ─────────────────────────────────────────── */
 let user = null;      // { id, name } 또는 null(게스트)
-let store = { attempts: [], bookmarks: [], exams: [], queue: [] };
+let store = { attempts: [], bookmarks: [], exams: [], queue: [], hl: {} };
 let syncState = 'local', flushing = false;
 const key = () => `n3-store-${user ? user.id : 'guest'}`;
 const persist = () => lsSet(key(), store);
-const emptyStore = () => ({ attempts: [], bookmarks: [], exams: [], queue: [] });
+const emptyStore = () => ({ attempts: [], bookmarks: [], exams: [], queue: [], hl: {} });
 
 function enqueue(op) { if (user) { store.queue.push(op); } persist(); flush(); }
 
@@ -54,6 +54,7 @@ async function flush() {
       if (kind === 'attempt') res = await sb.from('attempts').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
       else if (kind === 'exam') res = await sb.from('exam_results').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
       else if (kind === 'bm+') res = await sb.from('bookmarks').upsert(rows, { onConflict: 'user_id,question_id', ignoreDuplicates: true });
+      else if (kind === 'hl') res = await sb.from('highlights').upsert(rows, { onConflict: 'user_id,question_id' });
       else res = await sb.from('bookmarks').delete().eq('user_id', user.id).in('question_id', rows.map(r => r.question_id));
       if (res.error) throw res.error;
       store.queue.splice(0, batch.length); persist();
@@ -89,6 +90,8 @@ async function loadAccount() {
     for (const a of guest.attempts) store.queue.push({ t: 'attempt', row: a });
     for (const e of guest.exams) store.queue.push({ t: 'exam', row: e });
     for (const b of guest.bookmarks) store.queue.push({ t: 'bm+', row: { question_id: b } });
+    for (const [qid, marks] of Object.entries(guest.hl || {})) store.queue.push({ t: 'hl', row: { question_id: qid, marks, updated_at: new Date().toISOString() } });
+    store.hl = { ...(store.hl || {}), ...(guest.hl || {}) };
     lsDel('n3-store-guest');
     store.attempts.push(...guest.attempts); store.exams.push(...guest.exams);
     store.bookmarks = [...new Set([...store.bookmarks, ...guest.bookmarks])];
@@ -96,12 +99,16 @@ async function loadAccount() {
   }
   try {
     await flush();
-    const [a, b, e] = await Promise.all([fetchAll('attempts', 'answered_at', N3_ONLY), fetchAll('bookmarks', 'created_at', N3_ONLY), fetchAll('exam_results', 'finished_at', q => q.lte('exam_no', 10))]);
+    const [a, b, e, h] = await Promise.all([fetchAll('attempts', 'answered_at', N3_ONLY), fetchAll('bookmarks', 'created_at', N3_ONLY), fetchAll('exam_results', 'finished_at', q => q.lte('exam_no', 10)), fetchAll('highlights', 'updated_at', N3_ONLY).catch(err => { console.warn(err); return null; })]);
     const pendA = store.queue.filter(o => o.t === 'attempt').map(o => o.row);
     const pendE = store.queue.filter(o => o.t === 'exam').map(o => o.row);
     store.attempts = [...a, ...pendA];
     store.exams = [...e, ...pendE];
     store.bookmarks = b.map(x => x.question_id);
+    if (h) { // 아직 못 보낸 형광펜이 서버 것보다 새롭다
+      const pendH = Object.fromEntries(store.queue.filter(o => o.t === 'hl').map(o => [o.row.question_id, o.row.marks]));
+      store.hl = { ...Object.fromEntries(h.map(x => [x.question_id, x.marks])), ...pendH };
+    }
     persist(); indexAttempts();
   } catch (err) { console.warn(err); syncState = 'fail'; }
 }
@@ -141,8 +148,8 @@ function rank(q) { // 안 푼 연습 전용 → 안 푼 모의고사 문제 → 
   if (!hist[q.id]) return examIds.has(q.id) ? 1 : 0;
   return 2;
 }
-function pickUnits(partKey, want) {
-  const qs = QS.filter(q => q.part === partKey);
+function pickUnits(partKey, want, exclude = new Set()) {
+  const qs = QS.filter(q => q.part === partKey && !exclude.has(q.id));
   const units = {}; for (const q of qs) (units[q.gid || q.id] ||= []).push(q);
   const lastSeen = id => { let t = 0; for (const a of store.attempts) if (a.question_id === id) t = Math.max(t, +new Date(a.answered_at)); return t; };
   const scored = shuffle(Object.values(units)).map(u => ({ u, r: rank(u[0]), t: lastSeen(u[0].id) }))
@@ -151,14 +158,20 @@ function pickUnits(partKey, want) {
   for (const { u } of scored) { if (out.length >= want) break; out.push(...u.map(q => q.id)); }
   return out;
 }
-function todaySet() {
-  const ids = shuffle(wrongIds()).slice(0, 5);
-  const single = PARTS.filter(p => !p.group).map(p => ({ p, s: partStat(p.key) }))
+const TODAY_N = 10;
+/* 오늘의 학습 10문제: 복습할 문제 조금 + 약한 유형 + 단문 하나 + 여러 유형에서 고르게. exclude에 든 문제는 빼고 고른다. */
+function todaySet(exclude = new Set()) {
+  const ids = [];
+  const add = arr => { for (const i of arr) if (ids.length < TODAY_N && !ids.includes(i) && !exclude.has(i)) ids.push(i); };
+  add(shuffle(wrongIds()).slice(0, 3));
+  const weak = PARTS.filter(p => !p.group).map(p => ({ p, s: partStat(p.key) }))
     .sort((a, b) => (a.s.acc ?? .5) - (b.s.acc ?? .5) || a.s.seen / a.s.total - b.s.seen / b.s.total).slice(0, 3);
-  for (const { p } of single) ids.push(...pickUnits(p.key, 3).filter(i => !ids.includes(i)));
-  ids.push(...pickUnits('tanbun', 1).filter(i => !ids.includes(i)));
+  for (const { p } of weak) add(pickUnits(p.key, 2, exclude));
+  add(pickUnits('tanbun', 1, exclude));
+  for (const p of shuffle(PARTS.filter(p => !p.group))) add(pickUnits(p.key, 1, exclude));
   return ids;
 }
+const todayDone = () => new Set(store.attempts.filter(a => dayKey(a.answered_at) === dayKey(Date.now())).map(a => a.question_id));
 /* 지문 문제는 같은 지문끼리 붙여 둔다 */
 function keepGroups(ids) {
   const out = [], done = new Set();
@@ -252,7 +265,37 @@ function vocabHtml(q) {
   if (!q.v?.length) return '';
   return `<div class="vocab">${q.v.map(x => `<span class="ja">${esc(x.w)}${x.r ? ` <small>${esc(x.r)}</small>` : ''}</span><span>${esc(x.m)}</span>`).join('')}</div>`;
 }
-const scriptHtml = q => `<div class="scr">${q.script.map(l => `<p>${l.sp === 'N' ? '' : (l.sp === 'M' ? '男: ' : '女: ')}${esc(l.t)}</p>`).join('')}</div>`;
+/* 대본 한 줄을 글자 단위 조각으로 나눈다. 후리가나 덩어리는 한 조각. 형광펜 위치는 원문(t) 글자 번호로 저장한다. */
+const unesc = x => x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+function lineUnits(l) {
+  const src = l.r || esc(l.t), units = []; let o = 0;
+  for (const m of src.matchAll(/<ruby>(.*?)<rt>(.*?)<\/rt><\/ruby>|([^<]+)/g)) {
+    if (m[1] != null) { const b = unesc(m[1]); units.push({ b, rt: unesc(m[2]), o }); o += b.length; }
+    else for (const ch of unesc(m[3])) { units.push({ b: ch, o }); o += ch.length; }
+  }
+  return units;
+}
+function lineHtml(l, ranges = []) {
+  const on = u => ranges.some(([a, b]) => u.o < b && u.o + u.b.length > a);
+  let out = '', open = false;
+  for (const u of lineUnits(l)) {
+    const h = on(u);
+    if (h !== open) { out += h ? '<mark>' : '</mark>'; open = h; }
+    const inner = u.rt ? `<ruby>${esc(u.b)}<rt>${esc(u.rt)}</rt></ruby>` : esc(u.b);
+    out += `<span data-o="${u.o}" data-n="${u.b.length}">${inner}</span>`;
+  }
+  return out + (open ? '</mark>' : '');
+}
+const WHO = { M: '男', F: '女', N: '' };
+function scriptHtml(q) {
+  const marks = store.hl?.[q.id] || {};
+  return `<div class="scr ${V.hlOn ? 'hlon' : ''}" data-q="${q.id}">${q.script.map((l, i) => `<div class="ln"><span class="who">${WHO[l.sp]}</span><div><p class="jp" lang="ja" data-li="${i}">${lineHtml(l, marks[i])}</p>${l.k ? `<p class="ko">${esc(l.k)}</p>` : ''}</div></div>`).join('')}</div>`;
+}
+function scriptPanel(q) {
+  const has = Object.keys(store.hl?.[q.id] || {}).length;
+  return `<div class="scrhead"><b>대본</b><div class="btns2">${has ? `<button class="chip" data-act="hlclear">지우기</button>` : ''}<button class="chip ${V.hlOn ? 'on' : ''}" data-act="hltoggle">🖍 형광펜${V.hlOn ? ' 켜짐' : ''}</button></div></div>
+    ${V.hlOn ? '<p class="sub hlhelp">칠할 부분을 길게 눌러(또는 드래그해) 고르면 칠해져요. 칠한 곳을 누르면 지워져요.</p>' : ''}${scriptHtml(q)}`;
+}
 function passageHtml(q) {
   if (!q.gid) return '';
   const g = GROUPS[q.gid];
@@ -275,13 +318,23 @@ function optsHtml(q, chosen, reveal) {
     return `<button class="${cls}" data-pick="${i}" ${reveal === 'lock' ? 'disabled' : ''}><span class="n">${i + 1}</span><span>${hidden ? '' : c}</span>${mark ? `<span class="mark">${mark}</span>` : ''}</button>`;
   }).join('')}</div>`;
 }
-function explainHtml(q, ok) {
-  const g = q.gid ? GROUPS[q.gid] : null;
+function choicesHtml(q, chosen) {
+  return `<ol class="choices">${q.c.map((c, i) => {
+    const tag = i === q.a ? '<span class="pill ok">정답</span>' : i === chosen ? '<span class="pill no">내 답</span>' : '';
+    return `<li class="${i === q.a ? 'right' : i === chosen ? 'wrong' : ''}"><span class="n">${i + 1}</span><div>
+      <p class="ja" lang="ja">${q.cr[i]} ${tag}</p><p class="m">${esc(q.cm[i])}</p><p class="why">${esc(q.cn[i])}</p></div></li>`;
+  }).join('')}</ol>`;
+}
+function explainHtml(q, ok, chosen) {
+  const g = q.gid ? GROUPS[q.gid] : null, rich = !!q.cr;
+  const lineK = q.script?.some(l => l.k);
   return `<section class="panel exp">
     <p class="verdict ${ok ? 'ok' : 'no'}">${ok ? '정답이에요' : '아쉬워요'}</p>
-    ${q.answer ? `<p class="ja" lang="ja">${esc(q.answer)}</p>` : ''}
-    <p>${esc(q.e)}</p>
-    ${q.tr ? `<details><summary>${q.script ? '대본과 번역' : '번역'}</summary>${q.script ? scriptHtml(q) : ''}<p>${esc(q.tr)}</p></details>` : ''}
+    ${rich && q.fr ? `<div class="sent"><p class="ja" lang="ja">${q.fr}</p><p class="ko">${esc(q.fk)}</p></div>`
+      : q.answer ? `<p class="ja" lang="ja">${esc(q.answer)}</p>` : ''}
+    ${rich ? choicesHtml(q, chosen) : `<p>${esc(q.e)}</p>`}
+    ${q.script ? `<div class="scrbox">${scriptPanel(q)}${lineK ? '' : `<p class="sub">${esc(q.tr || '')}</p>`}</div>`
+      : q.tr && !rich ? `<details><summary>번역</summary><p>${esc(q.tr)}</p></details>` : ''}
     ${g?.tr ? `<details><summary>지문 번역</summary><p>${esc(g.tr)}</p></details>` : ''}
     ${q.v?.length ? `<details open><summary>단어 메모</summary>${vocabHtml(q)}</details>` : ''}
     <button class="bmk" data-act="bm" data-id="${q.id}">${store.bookmarks.includes(q.id) ? '★ 저장한 문제' : '☆ 문제 저장하기'}</button>
@@ -318,7 +371,7 @@ function vHome() {
       <div class="dday"><div><p class="sub">다음 JLPT</p><p style="font-weight:600">${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}</p></div><span class="big">D-${days}</span></div>
       <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.length} 문제</span></div></div>
       ${bar(solved / QS.length)}
-      <button class="primary" data-act="today">오늘의 문제 풀기</button>
+      <button class="primary" data-act="today">${todayN >= TODAY_N ? '다음 10문제 풀기' : '오늘의 10문제 풀기'}</button>
     </section>
     <div class="grid">
       <button class="part big2" data-go="notes">${wrong ? `<span class="pill no">${wrong}</span>` : ''}<b>오답노트</b><span>${wrong ? `복습할 문제 ${wrong}개` : '틀린 문제가 없어요'}</span></button>
@@ -344,10 +397,10 @@ function vPractice() {
     }).join('')}</div></div>${tabs('practice')}`;
 }
 
-function startQuiz(ids, title, mode = 'drill') {
+function startQuiz(ids, title, mode = 'drill', more = null) {
   ids = keepGroups(ids);
   if (!ids.length) return toast('풀 문제가 없어요');
-  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false });
+  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false, more });
 }
 function vQuiz() {
   const q = Q[V.ids[V.i]], p = PART[q.part], chosen = V.res[q.id]?.pick, done = chosen != null;
@@ -357,11 +410,11 @@ function vQuiz() {
       <p class="ins ja" lang="ja">${esc(p.ins)}</p>
       ${q.q ? `<p class="qtext" lang="ja">${q.q}</p>` : ''}
       ${optsHtml(q, chosen, done ? 'lock' : false)}</section>
-      ${done ? explainHtml(q, chosen === q.a) : ''}</div>`;
+      ${done ? explainHtml(q, chosen === q.a, chosen) : ''}</div>`;
   return `<header class="top sm"><button class="link" data-act="quit">✕ 닫기</button><span class="t">${esc(V.title)} · ${V.i + 1}/${V.ids.length}</span>${syncEl()}</header>
   <div class="bar blue" style="border-radius:0;height:3px;flex:none"><i style="width:${(V.i + (done ? 1 : 0)) / V.ids.length * 100}%;border-radius:0"></i></div>
   <div class="scroll" style="padding-top:18px">${q.script ? audioHtml(q, false) : ''}<div class="layout ${two ? 'two' : ''}">${passageHtml(q)}${side}</div></div>
-  ${done ? `<div class="foot"><button class="primary" data-act="next">${V.i + 1 < V.ids.length ? '다음 문제' : '결과 보기'}</button></div>` : ''}`;
+  ${done || V.i > 0 ? `<div class="foot two">${V.i > 0 ? '<button class="primary ghost" data-act="prev">이전</button>' : ''}${done ? `<button class="primary" data-act="next">${V.i + 1 < V.ids.length ? '다음 문제' : '결과 보기'}</button>` : ''}</div>` : ''}`;
 }
 function vResult() {
   const rows = Object.entries(V.res), right = rows.filter(([, r]) => r.ok).length;
@@ -369,7 +422,7 @@ function vResult() {
   return `<header class="top"><h1>${esc(V.title)} 결과</h1>${syncEl()}</header><div class="scroll">
     <section class="panel"><p class="sub">맞힌 문제</p><p class="big">${right}<small> / ${rows.length}</small></p>${bar(rows.length ? right / rows.length : 0, 'blue')}
       <p class="sub">${right === rows.length ? '전부 맞혔어요!' : wrong.length + '문제는 오답노트에 넣어 뒀어요'}</p></section>
-    <div class="btns">${wrong.length ? `<button class="primary" data-act="retry">틀린 문제 다시</button>` : ''}<button class="primary ghost" data-go="home">홈으로</button></div>
+    <div class="btns">${V.more ? `<button class="primary" data-act="more">다음 ${V.more.part && PART[V.more.part].group ? '지문' : '10문제'} 풀기</button>` : ''}${wrong.length ? `<button class="primary ${V.more ? 'ghost' : ''}" data-act="retry">틀린 문제 다시</button>` : ''}<button class="primary ghost" data-go="home">홈으로</button></div>
   </div>`;
 }
 
@@ -477,10 +530,14 @@ function vMe() {
   </div>${tabs('me')}`;
 }
 
+const viewKey = () => V.name + ':' + (V.name === 'exam' ? `${EX?.sec}-${EX?.i}` : V.i ?? '');
 function render() {
   if (V.name !== 'quiz' && V.name !== 'exam') $app.classList.remove('wide');
   const views = { auth: vAuth, home: vHome, practice: vPractice, quiz: vQuiz, result: vResult, notes: vNotes, exams: vExams, exam: vExam, examresult: vExamResult, me: vMe };
+  const keep = render.last === viewKey() ? document.querySelector('.scroll')?.scrollTop : null;
   $app.innerHTML = views[V.name]();
+  render.last = viewKey();
+  if (keep != null) { const sc = document.querySelector('.scroll'); if (sc) sc.scrollTop = keep; }
   paintSync(); tickTimer();
 }
 function tickTimer() {
@@ -513,7 +570,15 @@ const ACT = {
   async mode(b) { V.mode = b.dataset.m; V.err = ''; render(); },
   guest() { user = null; store = { ...emptyStore(), ...(lsGet(key()) || {}) }; indexAttempts(); lsSet('n3-guest', true); go('home'); },
   toauth() { lsDel('n3-guest'); go({ name: 'auth', mode: 'signup' }); },
-  today() { startQuiz(todaySet(), '오늘의 문제'); },
+  today() { startQuiz(todaySet(todayDone()), '오늘의 학습', 'drill', { kind: 'today' }); },
+  prev() { if (V.i > 0) { V.i--; V.showScript = false; TTS.stop(); render(); document.querySelector('.scroll').scrollTo(0, 0); } },
+  more() {
+    const m = V.more, seen = new Set([...(m.seen || []), ...V.ids]);
+    if (m.kind === 'today') startQuiz(todaySet(new Set([...seen, ...todayDone()])), '오늘의 학습', 'drill', { kind: 'today', seen: [...seen] });
+    else startQuiz(pickUnits(m.part, PART[m.part].group ? 5 : 10, seen), PART[m.part].name, 'drill', { part: m.part, seen: [...seen] });
+  },
+  hltoggle() { V.hlOn = !V.hlOn; getSelection()?.removeAllRanges(); render(); },
+  hlclear() { if (confirm('이 문제의 형광펜을 모두 지울까요?')) setMarks(curQ().id, {}); },
   next,
   quit() { if (Object.keys(V.res).length) go({ ...V, name: 'result' }); else go('home'); },
   retry() { startQuiz(Object.entries(V.res).filter(([, r]) => !r.ok).map(([id]) => id), '다시 풀기', 'review'); },
@@ -571,7 +636,7 @@ document.addEventListener('click', e => {
   const d = b.dataset;
   if (d.go) go(d.go);
   else if (d.area) { V.area = d.area; render(); }
-  else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name);
+  else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name, 'drill', { part: d.part });
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');
   else if (d.exam) { if (confirm(`모의고사 ${d.exam}회를 시작할까요? 약 140분이 걸려요.`)) startExam(+d.exam); }
@@ -583,6 +648,8 @@ document.addEventListener('keydown', e => {
   if (V.name !== 'quiz' && V.name !== 'exam') return;
   if (/^[1-4]$/.test(e.key)) document.querySelector(`[data-pick="${+e.key - 1}"]`)?.click();
   if (e.key === 'Enter' && V.name === 'quiz' && V.res[V.ids[V.i]]) next();
+  if (e.key === 'ArrowLeft' && V.name === 'quiz') ACT.prev();
+  if (e.key === 'ArrowRight' && V.name === 'quiz' && V.res[V.ids[V.i]]) next();
   if (e.key === ' ' && e.target === document.body) { e.preventDefault(); document.querySelector('[data-act="play"]')?.click(); }
 });
 document.addEventListener('submit', async e => {
@@ -624,3 +691,70 @@ async function enter(name) {
   } else if (lsGet('n3-guest')) { store = { ...emptyStore(), ...(lsGet(key()) || {}) }; indexAttempts(); go('home'); }
   else go({ name: 'auth', mode: 'signup' });
 })();
+
+/* ── 형광펜 ───────────────────────────────────────── */
+const curQ = () => V.name === 'exam' ? Q[EX.sections[EX.sec][EX.i]] : Q[V.ids[V.i]];
+function setMarks(qid, marks) {
+  for (const k of Object.keys(marks)) if (!marks[k].length) delete marks[k];
+  store.hl = { ...(store.hl || {}), [qid]: marks };
+  if (!Object.keys(marks).length) delete store.hl[qid];
+  store.queue = store.queue.filter(o => !(o.t === 'hl' && o.row.question_id === qid)); // 같은 문제는 마지막 것만 보낸다
+  enqueue({ t: 'hl', row: { question_id: qid, marks, updated_at: new Date().toISOString() } });
+  render();
+}
+function mergeRanges(rs) {
+  const out = [];
+  for (const [a, b] of [...rs].sort((x, y) => x[0] - y[0])) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
+  }
+  return out;
+}
+/* 선택 끝점이 가리키는 원문 글자 위치. 후리가나 덩어리 안이면 덩어리 전체로 넓힌다. */
+function pointOf(node, off, isEnd) {
+  if (node.nodeType === 1 && !node.closest('[data-o]')) { // 요소 사이 경계면 옆 자식으로 내려간다
+    const kids = node.childNodes; if (!kids.length) return null;
+    return off < kids.length ? pointOf(kids[off], 0, false) : pointOf(kids[kids.length - 1], Infinity, true);
+  }
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  const jp = el?.closest('.jp'), u = el?.closest('[data-o]'); if (!jp || !u) return null;
+  const li = +jp.dataset.li, o = +u.dataset.o, n = +u.dataset.n;
+  const len = node.nodeType === 3 ? node.length : node.childNodes.length;
+  if (el.closest('rt')) return { li, o: isEnd ? o + n : o };
+  if (off <= 0) return { li, o };
+  if (off >= len) return { li, o: o + n };
+  return { li, o: isEnd ? o + n : o };
+}
+function applySelection() {
+  if (!V.hlOn) return;
+  const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+  const r = sel.getRangeAt(0), box = document.querySelector('.scr');
+  if (!box || !r.intersectsNode(box)) return;
+  let a = pointOf(r.startContainer, r.startOffset, false), b = pointOf(r.endContainer, r.endOffset, true);
+  const lines = [...box.querySelectorAll('.jp')];
+  if (!a) { const first = lines.find(l => r.intersectsNode(l)); if (first) a = { li: +first.dataset.li, o: 0 }; }
+  if (!b) { const last = [...lines].reverse().find(l => r.intersectsNode(l)); if (last) b = { li: +last.dataset.li, o: Infinity }; }
+  if (!a || !b || a.li > b.li) return;
+  const q = Q[box.dataset.q], marks = JSON.parse(JSON.stringify(store.hl?.[q.id] || {}));
+  for (let li = a.li; li <= b.li; li++) {
+    const len = q.script[li].t.length, s0 = li === a.li ? a.o : 0, e0 = Math.min(len, li === b.li ? b.o : len);
+    if (e0 > s0) marks[li] = mergeRanges([...(marks[li] || []), [s0, e0]]);
+  }
+  sel.removeAllRanges();
+  setMarks(q.id, marks);
+}
+let selTimer = 0;
+const scheduleSel = () => { clearTimeout(selTimer); selTimer = setTimeout(applySelection, 350); };
+document.addEventListener('mouseup', e => { if (V.hlOn && e.target.closest('.scr')) scheduleSel(); });
+document.addEventListener('touchend', e => { if (V.hlOn && e.target.closest('.scr')) scheduleSel(); });
+document.addEventListener('selectionchange', () => { if (V.hlOn && !getSelection()?.isCollapsed && document.querySelector('.scr')) { clearTimeout(selTimer); selTimer = setTimeout(applySelection, 900); } });
+/* 형광펜이 켜져 있을 때 칠한 곳을 누르면 그 덩어리를 지운다 */
+document.addEventListener('click', e => {
+  if (!V.hlOn) return;
+  const m = e.target.closest('.scr mark'); if (!m || !getSelection()?.isCollapsed) return;
+  const jp = m.closest('.jp'), box = m.closest('.scr'), q = Q[box.dataset.q], li = +jp.dataset.li;
+  const u = e.target.closest('[data-o]'); if (!u) return;
+  const o = +u.dataset.o, marks = JSON.parse(JSON.stringify(store.hl?.[q.id] || {}));
+  marks[li] = (marks[li] || []).filter(([a, b]) => !(o >= a && o < b));
+  setMarks(q.id, marks);
+});

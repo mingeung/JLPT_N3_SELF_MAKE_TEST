@@ -176,3 +176,38 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
   .layout.two>.side{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* 해설: 완성 문장 + 선지별 번호 목록 */
+.sent{background:var(--bg);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.sent .ja{font-size:17px;line-height:2;color:var(--ink)}
+.sent .ko,.choices .m{color:var(--ink2);font-size:14.5px;line-height:1.6}
+.choices{list-style:none;display:flex;flex-direction:column;gap:8px;margin:0;padding:0}
+.choices li{display:flex;gap:12px;align-items:flex-start;background:var(--bg);border-radius:14px;padding:12px 14px;border:1.5px solid transparent}
+.choices li.right{border-color:var(--ok);background:var(--ok-soft)}
+.choices li.wrong{border-color:var(--no);background:var(--no-soft)}
+.choices .n{flex:none;width:24px;height:24px;border-radius:50%;background:var(--surface2);display:grid;place-items:center;font-size:13px;font-weight:700;margin-top:4px}
+.choices li.right .n{background:var(--ok);color:#fff}.choices li.wrong .n{background:var(--no);color:#fff}
+.choices li>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.choices .ja{font-size:16px;line-height:1.95;color:var(--ink);font-weight:500}
+.choices .ja .pill{vertical-align:middle;margin-left:4px;height:20px;font-family:var(--ko)}
+.pill.ok{background:var(--ok);color:#fff}.pill.no{background:var(--no);color:#fff}
+.choices .why{color:var(--muted);font-size:13.5px;line-height:1.55}
+/* 대본: 일본어 한 줄, 한국어 한 줄 */
+.scrbox{border-top:1px solid var(--surface2);padding-top:12px;display:flex;flex-direction:column;gap:10px}
+.scrhead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.scrhead b{font-size:15px}
+.btns2{display:flex;gap:6px}
+.scrhead .chip{height:32px;font-size:13px}
+.hlhelp{font-size:12.5px;margin-top:-4px}
+.scr{display:flex;flex-direction:column;gap:10px;line-height:1.6}
+.scr .ln{display:flex;gap:10px;align-items:flex-start}
+.scr .who{flex:none;width:18px;font:600 13px var(--ja);color:var(--muted);padding-top:9px}
+.scr .ln>div{min-width:0;flex:1}
+.scr .jp{font-family:var(--ja);font-size:16px;line-height:2.1;color:var(--ink)}
+.scr .ko{font-size:13.5px;line-height:1.55;color:var(--muted);margin-top:0}
+.scr mark{background:#FFE86B;color:inherit;border-radius:3px;box-shadow:0 0 0 1px #FFE86B}
+.scr.hlon .jp{user-select:text;-webkit-user-select:text;cursor:text}
+.scr.hlon mark{cursor:pointer}
+.foot.two{display:flex;gap:10px}
+.foot.two .primary{flex:1}
+.foot.two .ghost{flex:0 0 32%}

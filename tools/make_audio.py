@@ -58,7 +58,7 @@ def say(text, voice, key):  # 개발용: 파이프라인 시험에만 쓰고 배
 
 
 def lines_of(q, part):
-    out = [dict(l) for l in q["script"]]
+    out = [{"sp": l["sp"], "t": l["t"]} for l in q["script"]]  # 음성에 쓰는 것만 (후리가나·번역은 제외)
     if part in SPOKEN:
         for i, c in enumerate(q["c"]):
             out.append({"sp": "N", "t": f"{i + 1}ばん。{c}", "opt": True})
