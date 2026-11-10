@@ -113,6 +113,26 @@ def check_enrich(q, part):
             errors.append(f"보강: {i}: 대본 {j}번 줄 r이 t와 다름\n   {plain_of(l['r'])}\n   {l['t']}")
 
 
+SENT_PARTS = {"tanbun", "chubun", "chobun"}  # 해설에서 지문을 한 문장씩(후리가나+번역) 보여 주는 파트
+norm_text = lambda s: re.sub(r"[\s　]", "", strip_tags(s))
+
+
+def check_sents(g):
+    i = g["id"]
+    if "sents" not in g:
+        missing_enrich["지문 문장"] += 1
+        return
+    if not all(isinstance(x, dict) and x.get("r") and x.get("k") for x in g["sents"]):
+        return errors.append(f"보강: {i}: sents 항목에 r/k 없음")
+    for j, x in enumerate(g["sents"]):
+        check_ruby(f"{i}.sents[{j}]", x["r"])
+    got = norm_text("".join(plain_of(x["r"]) for x in g["sents"]))
+    want = norm_text(g["text"])
+    if got != want:
+        k = next((n for n, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+        errors.append(f"보강: {i}: 문장들을 이은 글이 지문과 다름 (위치 {k})\n   {got[max(0, k - 15):k + 25]}\n   {want[max(0, k - 15):k + 25]}")
+
+
 def check_q(q, part, spoken, gid=None):
     i = q.get("id", "?")
     n = 3 if part in ("hatsuwa", "sokuji") else 4
@@ -170,6 +190,10 @@ def main():
                 gid = it["id"]
                 check_html(gid, it.get("text"))
                 groups[gid] = dict(title=it.get("title", ""), text=it["text"], tr=it.get("tr", ""))
+                if key in SENT_PARTS:
+                    check_sents(it)
+                    if it.get("sents"):
+                        groups[gid]["sents"] = [dict(r=ruby_html(x["r"]), k=x["k"]) for x in it["sents"]]
                 qs = it["questions"]
             else:
                 gid, qs = None, [it]

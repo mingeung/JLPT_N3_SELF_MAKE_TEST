@@ -211,3 +211,15 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .foot.two{display:flex;gap:10px}
 .foot.two .primary{flex:1}
 .foot.two .ghost{flex:0 0 32%}
+
+/* 3차: 문제와 해설 사이 간격, 해설 배경, 음성 선택지 안내, 지문 한 문장씩 */
+.side{display:flex;flex-direction:column;gap:22px}
+.panel.exp{background:#F3F4FE;border:1px solid #E3E5FB}
+.panel.exp details{border-top-color:#E3E5FB}
+.spokenhint{font-size:13.5px;color:var(--accent);background:var(--accent-soft);border-radius:12px;padding:10px 12px;line-height:1.5}
+.sentlist{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.sentlist .ln{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border-radius:12px;padding:10px 12px}
+.sentlist .no{flex:none;font:600 12px var(--ko);color:var(--muted);padding-top:8px;min-width:14px}
+.sentlist .ln>div{min-width:0}
+.sentlist .jp{font-family:var(--ja);font-size:16px;line-height:2;color:var(--ink)}
+.sentlist .ko{font-size:13.5px;line-height:1.55;color:var(--muted)}

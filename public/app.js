@@ -5,6 +5,14 @@ const sb = supabase.createClient(SB_URL, SB_KEY);
 const { parts: PARTS, q: QS, g: GROUPS, exams: EXAMS } = window.N3;
 const examOf = no => EXAMS.find(x => x.no === no);
 const examName = no => examOf(no)?.label || `모의고사 ${no}회`;
+const revKey = id => `${'n3'}-examrev-${id}`;
+/* 지난 시험의 문항별 결과. 이 기기에서 푼 것은 고른 답까지 저장돼 있고, 아니면 풀이 기록에서 되살린다. */
+function examReview(row, no) {
+  const saved = lsGet(revKey(row.id)); if (saved) return saved;
+  const ids = examOf(no)?.sec.flat() || [], t = +new Date(row.finished_at), set = new Set(ids), got = {};
+  for (const a of store.attempts) if (a.mode === 'exam' && set.has(a.question_id) && Math.abs(+new Date(a.answered_at) - t) < 5 * 6e4) got[a.question_id] = a.correct;
+  return ids.filter(id => id in got).map(id => ({ id, pick: null, ok: got[id] }));
+}
 const examMins = e => e.min || SECTIONS.slice(0, 2).map(s => s.min);
 const PART = Object.fromEntries(PARTS.map(p => [p.key, p]));
 const Q = Object.fromEntries(QS.map(q => [q.id, q]));
@@ -314,7 +322,8 @@ function audioHtml(q, disabled) {
 }
 function optsHtml(q, chosen, reveal) {
   const hidden = PART[q.part].spoken && !reveal && !(!q.au && !TTS.ok && V.showScript);
-  return `<div class="opts" lang="ja">${q.c.map((c, i) => {
+  const hint = hidden ? '<p class="spokenhint">선택지는 소리로만 나와요. 끝까지 듣고 번호를 고르세요.</p>' : '';
+  return `${hint}<div class="opts" lang="ja">${q.c.map((c, i) => {
     let cls = 'opt', mark = '';
     if (reveal) { if (i === q.a) { cls += ' right'; mark = '정답'; } else if (i === chosen) { cls += ' wrong'; mark = '내 답'; } }
     else if (i === chosen) cls += ' sel';
@@ -338,7 +347,8 @@ function explainHtml(q, ok, chosen) {
     ${rich ? choicesHtml(q, chosen) : `<p>${esc(q.e)}</p>`}
     ${q.script ? `<div class="scrbox">${scriptPanel(q)}${lineK ? '' : `<p class="sub">${esc(q.tr || '')}</p>`}</div>`
       : q.tr && !rich ? `<details><summary>번역</summary><p>${esc(q.tr)}</p></details>` : ''}
-    ${g?.tr ? `<details><summary>지문 번역</summary><p>${esc(g.tr)}</p></details>` : ''}
+    ${g?.sents ? `<details open><summary>지문 한 문장씩 보기</summary><div class="sentlist">${g.sents.map((x, i) => `<div class="ln"><span class="no">${i + 1}</span><div><p class="jp" lang="ja">${x.r}</p><p class="ko">${esc(x.k)}</p></div></div>`).join('')}</div></details>`
+      : g?.tr ? `<details><summary>지문 번역</summary><p>${esc(g.tr)}</p></details>` : ''}
     ${q.v?.length ? `<details open><summary>단어 메모</summary>${vocabHtml(q)}</details>` : ''}
     <button class="bmk" data-act="bm" data-id="${q.id}">${store.bookmarks.includes(q.id) ? '★ 저장한 문제' : '☆ 문제 저장하기'}</button>
   </section>`;
@@ -417,7 +427,7 @@ function vQuiz() {
   return `<header class="top sm"><button class="link" data-act="quit">✕ 닫기</button><span class="t">${esc(V.title)} · ${V.i + 1}/${V.ids.length}</span>${syncEl()}</header>
   <div class="bar blue" style="border-radius:0;height:3px;flex:none"><i style="width:${(V.i + (done ? 1 : 0)) / V.ids.length * 100}%;border-radius:0"></i></div>
   <div class="scroll" style="padding-top:18px">${q.script ? audioHtml(q, false) : ''}<div class="layout ${two ? 'two' : ''}">${passageHtml(q)}${side}</div></div>
-  ${done || V.i > 0 ? `<div class="foot two">${V.i > 0 ? '<button class="primary ghost" data-act="prev">이전</button>' : ''}${done ? `<button class="primary" data-act="next">${V.i + 1 < V.ids.length ? '다음 문제' : '결과 보기'}</button>` : ''}</div>` : ''}`;
+  ${done || V.i > 0 ? `<div class="foot two">${V.i > 0 ? '<button class="primary ghost" data-act="prev">이전</button>' : ''}${done ? (V.i + 1 < V.ids.length ? '<button class="primary" data-act="next">다음 문제</button>' : V.back ? '<button class="primary" data-act="quit">시험 결과로</button>' : '<button class="primary" data-act="next">결과 보기</button>') : ''}</div>` : ''}`;
 }
 function vResult() {
   const rows = Object.entries(V.res), right = rows.filter(([, r]) => r.ok).length;
@@ -449,7 +459,7 @@ const scoreOf = (c, t) => t ? Math.round(c / t * 60) : 0;
 function vExams() {
   EX = EX || lsGet(examKey());
   return `<header class="top"><h1>모의고사</h1>${syncEl()}</header><div class="scroll">
-    ${EX ? `<section class="panel"><p>${esc(examName(EX.no))}를 풀던 중이에요.</p><div class="btns"><button class="primary" data-act="exresume">이어서 풀기</button><button class="primary ghost" data-act="exdrop">버리기</button></div></section>` : ''}
+    ${EX ? `<section class="panel"><p>${esc(examName(EX.no))} ${EX.sec + 1}교시를 풀던 중이에요${EX.left != null ? ` (남은 시간 ${Math.floor(EX.left / 6e4)}분 ${pad(Math.floor(EX.left / 1000) % 60)}초)` : ''}.</p><div class="btns"><button class="primary" data-act="exresume">이어서 풀기</button><button class="primary ghost" data-act="exdrop">버리기</button></div></section>` : ''}
     <p class="sub">정식 모의고사는 실제 시험과 비슷한 구성이에요. 언어지식 30분, 문법·독해 70분이 지나면 다음 교시로 넘어가고, 청해는 문제당 한 번만 들을 수 있어요. 점수는 정답 비율로 어림한 값이고 실제 시험의 채점 방식과는 달라요.</p>
     ${['mini', 'full'].map(kind => {
       const list = EXAMS.filter(e => kind === 'mini' ? e.mini : !e.mini);
@@ -483,7 +493,7 @@ function vExam() {
   const ids = EX.sections[EX.sec], q = Q[ids[EX.i]], p = PART[q.part], chosen = EX.ans[q.id];
   const answered = ids.filter(id => EX.ans[id] != null).length;
   $app.classList.toggle('wide', !!q.gid);
-  return `<header class="top"><span class="t">${esc(examName(EX.no))} ${EX.sec + 1}교시 · ${EX.i + 1}/${ids.length}</span><span id="timer" class="timer"></span></header>
+  return `<header class="top"><button class="link" data-act="exexit">나가기</button><span class="t">${esc(examName(EX.no))} ${EX.sec + 1}교시 · ${EX.i + 1}/${ids.length}</span><span id="timer" class="timer"></span></header>
   <div class="scroll">
     ${q.script ? audioHtml(q, EX.played[q.id]) : ''}
     <div class="layout ${q.gid ? 'two' : ''}">${passageHtml(q)}<div class="side"><section class="panel">
@@ -505,6 +515,7 @@ function finishExam() {
   }
   const row = { id: crypto.randomUUID(), exam_no: EX.no, lang_correct: tally.lang[0], lang_total: tally.lang[1], read_correct: tally.read[0], read_total: tally.read[1], listen_correct: tally.listen[0], listen_total: tally.listen[1], finished_at: new Date().toISOString() };
   store.exams.push(row); enqueue({ t: 'exam', row });
+  lsSet(revKey(row.id), review);
   EX = null; lsDel(examKey());
   go({ name: 'examresult', row, review });
 }
@@ -516,7 +527,7 @@ function vExamResult() {
     <section class="panel"><div class="row"><span>${pass ? '합격권이에요' : '조금 더 해봐요'}</span><span class="big">${t}<small> / 180</small></span></div>
       <div class="score"><div><b class="${low(a)}">${a}</b><span>언어지식 ${x.lang_correct}/${x.lang_total}</span></div><div><b class="${low(b)}">${b}</b><span>독해 ${x.read_correct}/${x.read_total}</span></div><div><b class="${low(c)}">${c}</b><span>청해 ${x.listen_correct}/${x.listen_total}</span></div></div>
       <p class="sub">합격 기준은 총점 ${PASS_TOTAL}점 이상, 영역별 ${PASS_SECTION}점 이상이에요. 위 점수는 정답 비율로 계산한 추정치예요.</p></section>
-    <div class="btns">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기</button>` : ''}<button class="primary ghost" data-go="exams">목록으로</button></div>
+    <div class="btns">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기</button>` : ''}<button class="primary ghost" data-act="exretake" data-no="${x.exam_no}">다시 풀기</button><button class="primary ghost" data-go="exams">목록으로</button></div>
   </div>`;
 }
 
@@ -552,7 +563,7 @@ function render() {
 function tickTimer() {
   const el = document.getElementById('timer');
   if (!el || !EX) return;
-  if (!EX.deadline) { el.textContent = '청해'; return; }
+  if (!EX.deadline) { el.textContent = EX.sec === 2 ? '청해' : ''; return; }
   const left = EX.deadline - Date.now();
   if (left <= 0) { toast('시간이 끝나서 다음으로 넘어가요'); return nextSection(); }
   const s = Math.ceil(left / 1000);
@@ -566,7 +577,6 @@ function pick(i) {
     const q = Q[V.ids[V.i]]; if (V.res[q.id]) return;
     const ok = i === q.a; V.res[q.id] = { pick: i, ok }; TTS.stop();
     record(q, ok, V.mode); render();
-    document.querySelector('.scroll').scrollTo({ top: 1e5, behavior: 'smooth' });
   } else if (V.name === 'exam') {
     const q = Q[EX.sections[EX.sec][EX.i]]; EX.ans[q.id] = i; lsSet(examKey(), EX); render();
   }
@@ -589,7 +599,7 @@ const ACT = {
   hltoggle() { V.hlOn = !V.hlOn; getSelection()?.removeAllRanges(); render(); },
   hlclear() { if (confirm('이 문제의 형광펜을 모두 지울까요?')) setMarks(curQ().id, {}); },
   next,
-  quit() { if (Object.keys(V.res).length) go({ ...V, name: 'result' }); else go('home'); },
+  quit() { if (V.back) go(V.back); else if (Object.keys(V.res).length) go({ ...V, name: 'result' }); else go('home'); },
   retry() { startQuiz(Object.entries(V.res).filter(([, r]) => !r.ok).map(([id]) => id), '다시 풀기', 'review'); },
   revall() { startQuiz(shuffle(wrongIds()), '오답 복습', 'review'); },
   bmall() { startQuiz(store.bookmarks.filter(id => Q[id]), '저장한 문제', 'review'); },
@@ -607,7 +617,12 @@ const ACT = {
   },
   rate() { const r = [1, 1.2, .8]; TTS.setRate(r[(r.indexOf(TTS.rate) + 1) % 3]); lsSet('n3-rate', TTS.rate); render(); },
   showscript() { V.showScript = true; render(); },
-  exresume() { go('exam'); },
+  exresume() { if (EX.left != null) { EX.deadline = Date.now() + EX.left; EX.left = null; lsSet(examKey(), EX); } go('exam'); },
+  exexit() {
+    if (!confirm('지금까지 푼 것을 임시 저장하고 나갈까요? 남은 시간도 멈춰 둬요.')) return;
+    EX.left = EX.deadline ? Math.max(0, EX.deadline - Date.now()) : null; EX.deadline = null; EX.paused = true;
+    lsSet(examKey(), EX); TTS.stop(); go('exams'); toast('임시 저장했어요');
+  },
   exdrop() { if (confirm('풀던 시험을 버릴까요?')) { EX = null; lsDel(examKey()); render(); } },
   exprev() { EX.i--; TTS.stop(); lsSet(examKey(), EX); render(); },
   exnext() { EX.i++; TTS.stop(); lsSet(examKey(), EX); render(); },
@@ -615,7 +630,12 @@ const ACT = {
     const left = EX.sections[EX.sec].filter(id => EX.ans[id] == null).length;
     if (confirm(left ? `안 푼 문제가 ${left}개 있어요. 끝낼까요?` : '이번 교시를 끝낼까요?')) nextSection();
   },
-  exreview() { startQuiz(V.review.filter(r => !r.ok).map(r => r.id), '모의고사 복습', 'review'); },
+  exreview() { // 내가 고른 답과 해설을 바로 보여 준다(다시 풀지 않음)
+    const wrong = V.review.filter(r => !r.ok), back = { ...V };
+    startQuiz(wrong.map(r => r.id), '틀린 문제 보기', 'review');
+    V.res = Object.fromEntries(wrong.map(r => [r.id, { pick: r.pick ?? -1, ok: false, seen: true }])); V.back = back; render();
+  },
+  exretake(b) { const e = examOf(+b.dataset.no); if (e && confirm(`${e.label}를 다시 풀까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no); },
   async pw() {
     const p = prompt('새 비밀번호 (8자 이상)'); if (!p) return;
     if (p.length < 8) return toast('8자 이상으로 입력해 주세요');
@@ -648,7 +668,11 @@ document.addEventListener('click', e => {
   else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name, 'drill', { part: d.part });
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');
-  else if (d.exam) { const e = examOf(+d.exam); if (confirm(`${e.label}를 시작할까요? 약 ${e.minutes}분이 걸려요.`)) startExam(+d.exam); }
+  else if (d.exam) {
+    const e = examOf(+d.exam), past = store.exams.filter(x => x.exam_no === e.no).sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at))[0];
+    if (past) go({ name: 'examresult', row: past, review: examReview(past, e.no) });
+    else if (confirm(`${e.label}를 시작할까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no);
+  }
   else if (d.jump != null) { EX.i = +d.jump; TTS.stop(); lsSet(examKey(), EX); render(); }
   else if (d.act) ACT[d.act]?.(b);
 });
