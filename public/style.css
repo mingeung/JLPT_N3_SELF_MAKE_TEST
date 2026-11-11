@@ -223,3 +223,12 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .sentlist .ln>div{min-width:0}
 .sentlist .jp{font-family:var(--ja);font-size:16px;line-height:2;color:var(--ink)}
 .sentlist .ko{font-size:13.5px;line-height:1.55;color:var(--muted)}
+
+/* 4차: 메모, 다시 나온 문제 표시, 이어 풀기 */
+.memo{display:flex;flex-direction:column;gap:6px;border-top:1px solid #E3E5FB;padding-top:12px}
+.memo label{font-size:14px;font-weight:600;color:var(--ink2)}
+.memo textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #E3E5FB;border-radius:12px;padding:10px 12px;font:15px/1.6 var(--ko);background:var(--bg);color:var(--ink)}
+.memo textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.qtag{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.resume{display:flex;flex-direction:column;gap:2px}
+.resume .link{align-self:center}

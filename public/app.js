@@ -45,11 +45,11 @@ function nextExamDate() {
 
 /* ── 저장 ─────────────────────────────────────────── */
 let user = null;      // { id, name } 또는 null(게스트)
-let store = { attempts: [], bookmarks: [], exams: [], queue: [], hl: {} };
+let store = { attempts: [], bookmarks: [], exams: [], queue: [], hl: {}, notes: {} };
 let syncState = 'local', flushing = false;
 const key = () => `n3-store-${user ? user.id : 'guest'}`;
 const persist = () => lsSet(key(), store);
-const emptyStore = () => ({ attempts: [], bookmarks: [], exams: [], queue: [], hl: {} });
+const emptyStore = () => ({ attempts: [], bookmarks: [], exams: [], queue: [], hl: {}, notes: {} });
 
 function enqueue(op) { if (user) { store.queue.push(op); } persist(); flush(); }
 
@@ -66,6 +66,7 @@ async function flush() {
       else if (kind === 'exam') res = await sb.from('exam_results').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
       else if (kind === 'bm+') res = await sb.from('bookmarks').upsert(rows, { onConflict: 'user_id,question_id', ignoreDuplicates: true });
       else if (kind === 'hl') res = await sb.from('highlights').upsert(rows, { onConflict: 'user_id,question_id' });
+      else if (kind === 'note') res = await sb.from('notes').upsert(rows, { onConflict: 'user_id,question_id' });
       else res = await sb.from('bookmarks').delete().eq('user_id', user.id).in('question_id', rows.map(r => r.question_id));
       if (res.error) throw res.error;
       store.queue.splice(0, batch.length); persist();
@@ -103,6 +104,8 @@ async function loadAccount() {
     for (const b of guest.bookmarks) store.queue.push({ t: 'bm+', row: { question_id: b } });
     for (const [qid, marks] of Object.entries(guest.hl || {})) store.queue.push({ t: 'hl', row: { question_id: qid, marks, updated_at: new Date().toISOString() } });
     store.hl = { ...(store.hl || {}), ...(guest.hl || {}) };
+    for (const [qid, body] of Object.entries(guest.notes || {})) store.queue.push({ t: 'note', row: { question_id: qid, body, updated_at: new Date().toISOString() } });
+    store.notes = { ...(store.notes || {}), ...(guest.notes || {}) };
     lsDel('n3-store-guest');
     store.attempts.push(...guest.attempts); store.exams.push(...guest.exams);
     store.bookmarks = [...new Set([...store.bookmarks, ...guest.bookmarks])];
@@ -110,7 +113,7 @@ async function loadAccount() {
   }
   try {
     await flush();
-    const [a, b, e, h] = await Promise.all([fetchAll('attempts', 'answered_at', N3_ONLY), fetchAll('bookmarks', 'created_at', N3_ONLY), fetchAll('exam_results', 'finished_at', q => q.lte('exam_no', 10)), fetchAll('highlights', 'updated_at', N3_ONLY).catch(err => { console.warn(err); return null; })]);
+    const [a, b, e, h, n] = await Promise.all([fetchAll('attempts', 'answered_at', N3_ONLY), fetchAll('bookmarks', 'created_at', N3_ONLY), fetchAll('exam_results', 'finished_at', q => q.lte('exam_no', 10)), fetchAll('highlights', 'updated_at', N3_ONLY).catch(err => { console.warn(err); return null; }), fetchAll('notes', 'updated_at', N3_ONLY).catch(err => { console.warn(err); return null; })]);
     const pendA = store.queue.filter(o => o.t === 'attempt').map(o => o.row);
     const pendE = store.queue.filter(o => o.t === 'exam').map(o => o.row);
     store.attempts = [...a, ...pendA];
@@ -119,6 +122,10 @@ async function loadAccount() {
     if (h) { // 아직 못 보낸 형광펜이 서버 것보다 새롭다
       const pendH = Object.fromEntries(store.queue.filter(o => o.t === 'hl').map(o => [o.row.question_id, o.row.marks]));
       store.hl = { ...Object.fromEntries(h.map(x => [x.question_id, x.marks])), ...pendH };
+    }
+    if (n) { // 아직 못 보낸 메모가 서버 것보다 새롭다
+      const pendN = Object.fromEntries(store.queue.filter(o => o.t === 'note').map(o => [o.row.question_id, o.row.body]));
+      store.notes = { ...Object.fromEntries(n.filter(x => x.body).map(x => [x.question_id, x.body])), ...pendN };
     }
     persist(); indexAttempts();
   } catch (err) { console.warn(err); syncState = 'fail'; }
@@ -350,6 +357,7 @@ function explainHtml(q, ok, chosen) {
     ${g?.sents ? `<details open><summary>지문 한 문장씩 보기</summary><div class="sentlist">${g.sents.map((x, i) => `<div class="ln"><span class="no">${i + 1}</span><div><p class="jp" lang="ja">${x.r}</p><p class="ko">${esc(x.k)}</p></div></div>`).join('')}</div></details>`
       : g?.tr ? `<details><summary>지문 번역</summary><p>${esc(g.tr)}</p></details>` : ''}
     ${q.v?.length ? `<details open><summary>단어 메모</summary>${vocabHtml(q)}</details>` : ''}
+    <div class="memo"><label for="memo-${q.id}">📝 메모</label><textarea id="memo-${q.id}" data-memo="${q.id}" maxlength="2000" rows="3" placeholder="외울 단어, 헷갈린 점 등을 적어 두세요. 자동으로 저장돼요.">${esc(store.notes?.[q.id] || '')}</textarea></div>
     <button class="bmk" data-act="bm" data-id="${q.id}">${store.bookmarks.includes(q.id) ? '★ 저장한 문제' : '☆ 문제 저장하기'}</button>
   </section>`;
 }
@@ -376,7 +384,7 @@ function vHome() {
   const { date, days } = nextExamDate();
   const wrong = wrongIds().length;
   const solved = Object.keys(hist).filter(id => Q[id]).length;
-  const todayN = store.attempts.filter(a => dayKey(a.answered_at) === dayKey(Date.now())).length;
+  const todayN = todayDone().size; // 같은 문제를 다시 풀어도 한 번만 센다
   return `<header class="top"><h1>오늘의 학습</h1>${syncEl()}</header>
   <div class="scroll">
     ${user ? `<p class="sub" style="margin-top:-8px">${esc(user.name)}님, 오늘도 한 걸음씩 가볼까요?</p>` : `<button class="notice" data-act="toauth"><span>로그인하면 기록이 계정에 저장돼요</span><span>›</span></button>`}
@@ -384,7 +392,9 @@ function vHome() {
       <div class="dday"><div><p class="sub">다음 JLPT</p><p style="font-weight:600">${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}</p></div><span class="big">D-${days}</span></div>
       <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.length} 문제</span></div></div>
       ${bar(solved / QS.length)}
-      <button class="primary" data-act="today">${todayN >= TODAY_N ? '다음 10문제 풀기' : '오늘의 10문제 풀기'}</button>
+      ${(() => { const ss = lsGet(sessKey()); if (!ss || !ss.ids?.every(id => Q[id])) return ''; const n = Object.keys(ss.res).length;
+        return `<div class="resume"><button class="primary" data-act="resume">이어서 풀기 · ${esc(ss.title)} ${n}/${ss.ids.length}</button><button class="link sub" data-act="dropsess">그만두기</button></div>`; })()}
+      <button class="primary ${lsGet(sessKey()) ? 'ghost' : ''}" data-act="today">${todayN >= TODAY_N ? '다음 10문제 풀기' : '오늘의 10문제 풀기'}</button>
     </section>
     <div class="grid">
       <button class="part big2" data-go="notes">${wrong ? `<span class="pill no">${wrong}</span>` : ''}<b>오답노트</b><span>${wrong ? `복습할 문제 ${wrong}개` : '틀린 문제가 없어요'}</span></button>
@@ -413,13 +423,17 @@ function vPractice() {
 function startQuiz(ids, title, mode = 'drill', more = null) {
   ids = keepGroups(ids);
   if (!ids.length) return toast('풀 문제가 없어요');
-  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false, more });
+  const open = new Set(wrongIds()); // 시작할 때 기준: 복습할 문제 / 전에 푼 문제
+  const tags = Object.fromEntries(ids.filter(id => hist[id]).map(id => [id, open.has(id) ? 'review' : 'again']));
+  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false, more, tags });
+  saveSess();
 }
 function vQuiz() {
   const q = Q[V.ids[V.i]], p = PART[q.part], chosen = V.res[q.id]?.pick, done = chosen != null;
   const two = !!q.gid;
   $app.classList.toggle('wide', two);
   const side = `<div class="side"><section class="qcard">
+      ${V.tags?.[q.id] ? `<p class="qtag">${V.tags[q.id] === 'review' ? '<span class="pill no">복습</span> 전에 틀린 문제예요' : '<span class="pill">다시 풀기</span> 전에 풀어 본 문제예요'}</p>` : ''}
       <p class="ins ja" lang="ja">${esc(p.ins)}</p>
       ${q.q ? `<p class="qtext" lang="ja">${q.q}</p>` : ''}
       ${optsHtml(q, chosen, done ? 'lock' : false)}</section>
@@ -447,12 +461,23 @@ function vNotes() {
     <section class="panel"><div class="row"><div><p style="font-weight:700;font-size:17px">복습할 문제 ${ids.length}개</p><p class="sub">2번 연속 맞히면 목록에서 빠져요</p></div></div>
       <button class="primary" data-act="revall" ${ids.length ? '' : 'disabled'}>복습 시작</button></section>
     <div class="list">${ids.slice(0, 60).map(id => row(id, `<span class="pill no">${misses(id)}번 틀림</span>`)).join('')}</div>
+    ${(() => { const memo = Object.keys(store.notes || {}).filter(id => Q[id]); return memo.length ? `<div class="lblrow"><h2 class="lbl">메모한 문제 ${memo.length}개</h2></div><div class="list">${memo.slice(0, 60).map(id => row(id, '<span class="pill">메모</span>')).join('')}</div>` : ''; })()}
     <div class="lblrow"><h2 class="lbl">저장한 문제 ${bm.length}개</h2>${bm.length ? `<button class="link sub" data-act="bmall">모두 풀기 ›</button>` : ''}</div>
     ${bm.length ? `<div class="list">${bm.slice(0, 60).map(id => row(id, '<span class="pill ac">저장</span>')).join('')}</div>` : `<p class="sub">해설 화면에서 ☆를 누르면 여기에 모여요.</p>`}
   </div>${tabs('notes')}`;
 }
 
 /* ── 모의고사 ─────────────────────────────────────── */
+const sessKey = () => `n3-sess-${user ? user.id : 'guest'}`;
+/* 오늘의 학습·유형별 연습 세트를 풀다가 닫으면 이 기기에 남겨 두고 홈에서 이어 푼다(한 세트만).
+   오답노트의 '다시 보기'나 시험의 '틀린 문제 보기'는 남기지도, 남은 세트를 지우지도 않는다. */
+const sessOwn = () => V.name === 'quiz' && !!V.more && !V.back;
+function saveSess() {
+  if (!sessOwn()) return;
+  const left = V.ids.filter(id => !V.res[id]).length;
+  if (!left) return lsDel(sessKey());
+  lsSet(sessKey(), { ids: V.ids, i: V.i, title: V.title, mode: V.mode, res: V.res, more: V.more, tags: V.tags, at: Date.now() });
+}
 const examKey = () => `n3-exam-${user ? user.id : 'guest'}`;
 let EX = null;
 const scoreOf = (c, t) => t ? Math.round(c / t * 60) : 0;
@@ -532,10 +557,10 @@ function vExamResult() {
 }
 
 function vMe() {
-  const days = [...Array(14)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - 13 + i); const k = dayKey(d); return store.attempts.filter(a => dayKey(a.answered_at) === k).length; });
+  const days = [...Array(14)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - 13 + i); const k = dayKey(d); return new Set(store.attempts.filter(a => dayKey(a.answered_at) === k).map(a => a.question_id)).size; });
   const max = Math.max(1, ...days);
   return `<header class="top"><h1>내 기록</h1>${syncEl()}</header><div class="scroll">
-    <section class="panel"><div class="row"><span>최근 14일</span><span class="sub">${store.attempts.length}회 풀이 · ${streak()}일 연속</span></div>
+    <section class="panel"><div class="row"><span>최근 14일</span><span class="sub">${new Set(store.attempts.map(a => a.question_id)).size}문제 풀이 · ${streak()}일 연속</span></div>
       <div class="days">${days.map(n => `<div class="${n ? '' : 'none'}" style="height:${Math.max(4, n / max * 100)}%" title="${n}문제"></div>`).join('')}</div><div class="daylbl"><span>2주 전</span><span>오늘</span></div></section>
     <h2 class="lbl">유형별</h2><section class="panel">${PARTS.map(p => { const s = partStat(p.key); return `<div class="row"><span>${esc(p.name)}</span><span class="sub">${s.seen}/${s.total} · ${pct(s.acc)}</span></div>`; }).join('')}</section>
     <h2 class="lbl">계정</h2><section class="panel">
@@ -576,21 +601,21 @@ function pick(i) {
   if (V.name === 'quiz') {
     const q = Q[V.ids[V.i]]; if (V.res[q.id]) return;
     const ok = i === q.a; V.res[q.id] = { pick: i, ok }; TTS.stop();
-    record(q, ok, V.mode); render();
+    record(q, ok, V.mode); saveSess(); render();
   } else if (V.name === 'exam') {
     const q = Q[EX.sections[EX.sec][EX.i]]; EX.ans[q.id] = i; lsSet(examKey(), EX); render();
   }
 }
 function next() {
-  if (V.i + 1 < V.ids.length) { V.i++; V.showScript = false; TTS.stop(); render(); document.querySelector('.scroll').scrollTo(0, 0); }
-  else go({ ...V, name: 'result' });
+  if (V.i + 1 < V.ids.length) { V.i++; V.showScript = false; TTS.stop(); saveSess(); render(); document.querySelector('.scroll').scrollTo(0, 0); }
+  else { if (sessOwn()) lsDel(sessKey()); go({ ...V, name: 'result' }); }
 }
 const ACT = {
   async mode(b) { V.mode = b.dataset.m; V.err = ''; render(); },
   guest() { user = null; store = { ...emptyStore(), ...(lsGet(key()) || {}) }; indexAttempts(); lsSet('n3-guest', true); go('home'); },
   toauth() { lsDel('n3-guest'); go({ name: 'auth', mode: 'signup' }); },
   today() { startQuiz(todaySet(todayDone()), '오늘의 학습', 'drill', { kind: 'today' }); },
-  prev() { if (V.i > 0) { V.i--; V.showScript = false; TTS.stop(); render(); document.querySelector('.scroll').scrollTo(0, 0); } },
+  prev() { if (V.i > 0) { V.i--; V.showScript = false; TTS.stop(); saveSess(); render(); document.querySelector('.scroll').scrollTo(0, 0); } },
   more() {
     const m = V.more, seen = new Set([...(m.seen || []), ...V.ids]);
     if (m.kind === 'today') startQuiz(todaySet(new Set([...seen, ...todayDone()])), '오늘의 학습', 'drill', { kind: 'today', seen: [...seen] });
@@ -599,7 +624,20 @@ const ACT = {
   hltoggle() { V.hlOn = !V.hlOn; getSelection()?.removeAllRanges(); render(); },
   hlclear() { if (confirm('이 문제의 형광펜을 모두 지울까요?')) setMarks(curQ().id, {}); },
   next,
-  quit() { if (V.back) go(V.back); else if (Object.keys(V.res).length) go({ ...V, name: 'result' }); else go('home'); },
+  quit() {
+    if (V.back) return go(V.back);
+    const answered = Object.keys(V.res).length, left = V.ids.length - answered;
+    const own = sessOwn();
+    if (own && left && answered) { saveSess(); toast('풀던 곳을 저장했어요. 홈에서 이어서 풀 수 있어요'); go('home'); }
+    else if (answered) { if (own) lsDel(sessKey()); go({ ...V, name: 'result' }); }
+    else { if (own) lsDel(sessKey()); go('home'); }
+  },
+  resume() {
+    const ss = lsGet(sessKey()); if (!ss) return render();
+    const first = ss.ids.findIndex(id => !ss.res[id]);
+    go({ name: 'quiz', ...ss, i: first < 0 ? ss.i : first, showScript: false });
+  },
+  dropsess() { if (confirm('풀던 문제를 그만두고 지울까요? 푼 기록은 남아요.')) { lsDel(sessKey()); render(); } },
   retry() { startQuiz(Object.entries(V.res).filter(([, r]) => !r.ok).map(([id]) => id), '다시 풀기', 'review'); },
   revall() { startQuiz(shuffle(wrongIds()), '오답 복습', 'review'); },
   bmall() { startQuiz(store.bookmarks.filter(id => Q[id]), '저장한 문제', 'review'); },
@@ -632,8 +670,9 @@ const ACT = {
   },
   exreview() { // 내가 고른 답과 해설을 바로 보여 준다(다시 풀지 않음)
     const wrong = V.review.filter(r => !r.ok), back = { ...V };
-    startQuiz(wrong.map(r => r.id), '틀린 문제 보기', 'review');
-    V.res = Object.fromEntries(wrong.map(r => [r.id, { pick: r.pick ?? -1, ok: false, seen: true }])); V.back = back; render();
+    if (!wrong.length) return;
+    go({ name: 'quiz', ids: keepGroups(wrong.map(r => r.id)), i: 0, title: '틀린 문제 보기', mode: 'review', showScript: false, back,
+      res: Object.fromEntries(wrong.map(r => [r.id, { pick: r.pick ?? -1, ok: false, seen: true }])) });
   },
   exretake(b) { const e = examOf(+b.dataset.no); if (e && confirm(`${e.label}를 다시 풀까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no); },
   async pw() {
@@ -677,7 +716,7 @@ document.addEventListener('click', e => {
   else if (d.act) ACT[d.act]?.(b);
 });
 document.addEventListener('keydown', e => {
-  if (e.target.matches('input') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (V.name !== 'quiz' && V.name !== 'exam') return;
   if (/^[1-4]$/.test(e.key)) document.querySelector(`[data-pick="${+e.key - 1}"]`)?.click();
   if (e.key === 'Enter' && V.name === 'quiz' && V.res[V.ids[V.i]]) next();
@@ -791,3 +830,18 @@ document.addEventListener('click', e => {
   marks[li] = (marks[li] || []).filter(([a, b]) => !(o >= a && o < b));
   setMarks(q.id, marks);
 });
+
+/* ── 메모 ─────────────────────────────────────────── */
+let memoTimer = 0;
+function setNote(qid, body) {
+  body = body.slice(0, 2000);
+  store.notes = { ...(store.notes || {}) };
+  if (body.trim()) store.notes[qid] = body; else delete store.notes[qid];
+  persist();
+  clearTimeout(memoTimer);
+  memoTimer = setTimeout(() => { // 입력이 멈추면 서버로 (같은 문제는 마지막 것만)
+    store.queue = store.queue.filter(o => !(o.t === 'note' && o.row.question_id === qid));
+    enqueue({ t: 'note', row: { question_id: qid, body: store.notes[qid] || '', updated_at: new Date().toISOString() } });
+  }, 800);
+}
+document.addEventListener('input', e => { if (e.target.matches('[data-memo]')) setNote(e.target.dataset.memo, e.target.value); });
