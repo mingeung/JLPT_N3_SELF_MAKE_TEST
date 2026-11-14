@@ -232,3 +232,8 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .qtag{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
 .resume{display:flex;flex-direction:column;gap:2px}
 .resume .link{align-self:center}
+
+/* 개인 문제집 문항 배지 */
+.pill.src{background:#FFF3D6;color:#8A5A00}
+.btns.col{flex-direction:column}
+.btns.col>button{width:100%}

@@ -3,11 +3,13 @@ const SB_URL = 'https://cdmfglqqhqfjhblaikdz.supabase.co';
 const SB_KEY = 'sb_publishable_NXzZ41oAbjX6jckVqkfqMg_PGcL-BHN'; // 공개용 키. 접근은 RLS가 막는다.
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const { parts: PARTS, q: QS, g: GROUPS, exams: EXAMS } = window.N3;
-const examOf = no => EXAMS.find(x => x.no === no);
+const PRIV_EXAMS = []; // 로그인한 사람만 받는 개인 모의고사(문제집 풀이 결과)
+const examOf = no => EXAMS.find(x => x.no === no) || PRIV_EXAMS.find(x => x.no === no);
 const examName = no => examOf(no)?.label || `모의고사 ${no}회`;
 const revKey = id => `${'n3'}-examrev-${id}`;
 /* 지난 시험의 문항별 결과. 이 기기에서 푼 것은 고른 답까지 저장돼 있고, 아니면 풀이 기록에서 되살린다. */
 function examReview(row, no) {
+  const pe = PRIV_EXAMS.find(x => x.no === no); if (pe) return pe.review.filter(r => Q[r.id]);
   const saved = lsGet(revKey(row.id)); if (saved) return saved;
   const ids = examOf(no)?.sec.flat() || [], t = +new Date(row.finished_at), set = new Set(ids), got = {};
   for (const a of store.attempts) if (a.mode === 'exam' && set.has(a.question_id) && Math.abs(+new Date(a.answered_at) - t) < 5 * 6e4) got[a.question_id] = a.correct;
@@ -129,6 +131,23 @@ async function loadAccount() {
     }
     persist(); indexAttempts();
   } catch (err) { console.warn(err); syncState = 'fail'; }
+  await loadPrivate().catch(err => console.warn(err));
+}
+
+/* 개인 문항: 본인 계정에만 열린 private_items 표와 private-audio 저장소에서 받는다. */
+async function loadPrivate() {
+  if (!user) return;
+  const { data, error } = await sb.from('private_items').select('kind,item_id,data');
+  if (error) return console.warn(error);
+  const paths = [];
+  for (const r of data || []) {
+    if (r.kind === 'g') GROUPS[r.item_id] = r.data;
+    else if (r.kind === 'q') { if (!Q[r.item_id]) QS.push(r.data); Q[r.item_id] = r.data; if (r.data.aup) paths.push(r.data.aup); }
+    else if (r.kind === 'exam' && !PRIV_EXAMS.some(x => x.no === r.data.no)) PRIV_EXAMS.push(r.data);
+  }
+  if (!paths.length) return;
+  const { data: urls } = await sb.storage.from('private-audio').createSignedUrls(paths, 60 * 60 * 12);
+  for (const u of urls || []) for (const q of QS) if (q.aup && q.aup === u.path && u.signedUrl) q.au = u.signedUrl;
 }
 
 /* ── 통계 ─────────────────────────────────────────── */
@@ -143,7 +162,7 @@ const isOpenWrong = id => { // 틀린 적이 있고, 그 뒤로 2번 연속 맞�
 };
 const wrongIds = () => Object.keys(hist).filter(id => Q[id] && isOpenWrong(id));
 function partStat(k) {
-  const qs = QS.filter(q => q.part === k); let seen = 0, last = 0;
+  const qs = QS.filter(q => q.part === k && !q.src); let seen = 0, last = 0;
   for (const q of qs) { const h = hist[q.id]; if (h) { seen++; if (h[h.length - 1]) last++; } }
   return { total: qs.length, seen, acc: seen ? last / seen : null };
 }
@@ -167,7 +186,7 @@ function rank(q) { // 안 푼 연습 전용 → 안 푼 모의고사 문제 → 
   return 2;
 }
 function pickUnits(partKey, want, exclude = new Set()) {
-  const qs = QS.filter(q => q.part === partKey && !exclude.has(q.id));
+  const qs = QS.filter(q => q.part === partKey && !q.src && !exclude.has(q.id));
   const units = {}; for (const q of qs) (units[q.gid || q.id] ||= []).push(q);
   const lastSeen = id => { let t = 0; for (const a of store.attempts) if (a.question_id === id) t = Math.max(t, +new Date(a.answered_at)); return t; };
   const scored = shuffle(Object.values(units)).map(u => ({ u, r: rank(u[0]), t: lastSeen(u[0].id) }))
@@ -181,7 +200,8 @@ const TODAY_N = 10;
 function todaySet(exclude = new Set()) {
   const ids = [];
   const add = arr => { for (const i of arr) if (ids.length < TODAY_N && !ids.includes(i) && !exclude.has(i)) ids.push(i); };
-  add(shuffle(wrongIds()).slice(0, 3));
+  const open = shuffle(wrongIds()); // 복습 3자리: 문제집 모의고사 오답을 2개까지 먼저
+  add([...open.filter(i => Q[i].src).slice(0, 2), ...open.filter(i => !Q[i].src)].slice(0, 3));
   const weak = PARTS.filter(p => !p.group).map(p => ({ p, s: partStat(p.key) }))
     .sort((a, b) => (a.s.acc ?? .5) - (b.s.acc ?? .5) || a.s.seen / a.s.total - b.s.seen / b.s.total).slice(0, 3);
   for (const { p } of weak) add(pickUnits(p.key, 2, exclude));
@@ -189,7 +209,8 @@ function todaySet(exclude = new Set()) {
   for (const p of shuffle(PARTS.filter(p => !p.group))) add(pickUnits(p.key, 1, exclude));
   return ids;
 }
-const todayDone = () => new Set(store.attempts.filter(a => dayKey(a.answered_at) === dayKey(Date.now())).map(a => a.question_id));
+const bookRow = a => a.mode === 'exam' && Q[a.question_id]?.src; // 종이 문제집 채점 기록(오늘 푼 수에는 넣지 않음)
+const todayDone = () => new Set(store.attempts.filter(a => !bookRow(a) && dayKey(a.answered_at) === dayKey(Date.now())).map(a => a.question_id));
 /* 지문 문제는 같은 지문끼리 붙여 둔다 */
 function keepGroups(ids) {
   const out = [], done = new Set();
@@ -383,14 +404,14 @@ function vAuth() {
 function vHome() {
   const { date, days } = nextExamDate();
   const wrong = wrongIds().length;
-  const solved = Object.keys(hist).filter(id => Q[id]).length;
+  const solved = Object.keys(hist).filter(id => Q[id] && !Q[id].src).length;
   const todayN = todayDone().size; // 같은 문제를 다시 풀어도 한 번만 센다
   return `<header class="top"><h1>오늘의 학습</h1>${syncEl()}</header>
   <div class="scroll">
     ${user ? `<p class="sub" style="margin-top:-8px">${esc(user.name)}님, 오늘도 한 걸음씩 가볼까요?</p>` : `<button class="notice" data-act="toauth"><span>로그인하면 기록이 계정에 저장돼요</span><span>›</span></button>`}
     <section class="panel">
       <div class="dday"><div><p class="sub">다음 JLPT</p><p style="font-weight:600">${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}</p></div><span class="big">D-${days}</span></div>
-      <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.length} 문제</span></div></div>
+      <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.filter(q => !q.src).length} 문제</span></div></div>
       ${bar(solved / QS.length)}
       ${(() => { const ss = lsGet(sessKey()); if (!ss || !ss.ids?.every(id => Q[id])) return ''; const n = Object.keys(ss.res).length;
         return `<div class="resume"><button class="primary" data-act="resume">이어서 풀기 · ${esc(ss.title)} ${n}/${ss.ids.length}</button><button class="link sub" data-act="dropsess">그만두기</button></div>`; })()}
@@ -433,6 +454,7 @@ function vQuiz() {
   const two = !!q.gid;
   $app.classList.toggle('wide', two);
   const side = `<div class="side"><section class="qcard">
+      ${q.src ? `<p class="qtag"><span class="pill src">📘 ${esc(q.src)}</span>${q.flag ? '헷갈림 표시' : ''}</p>` : ''}
       ${V.tags?.[q.id] ? `<p class="qtag">${V.tags[q.id] === 'review' ? '<span class="pill no">복습</span> 전에 틀린 문제예요' : '<span class="pill">다시 풀기</span> 전에 풀어 본 문제예요'}</p>` : ''}
       <p class="ins ja" lang="ja">${esc(p.ins)}</p>
       ${q.q ? `<p class="qtext" lang="ja">${q.q}</p>` : ''}
@@ -455,7 +477,7 @@ function vResult() {
 
 function vNotes() {
   const ids = wrongIds(), bm = store.bookmarks.filter(id => Q[id]);
-  const row = (id, pill) => { const q = Q[id]; return `<button class="part item" data-review="${id}">${pill}<span>${esc(PART[q.part].name)}</span><span class="ja">${esc((q.q || (q.script && q.script[0].t) || GROUPS[q.gid]?.title || '').replace(/<rt>.*?<\/rt>|<[^>]+>/g, '').slice(0, 40))}</span></button>`; };
+  const row = (id, pill) => { const q = Q[id]; return `<button class="part item" data-review="${id}">${pill}<span>${esc(PART[q.part].name)}${q.src ? ' · 📘 문제집' : ''}</span><span class="ja">${esc((q.q || (q.script && q.script[0].t) || GROUPS[q.gid]?.title || '').replace(/<rt>.*?<\/rt>|<[^>]+>/g, '').slice(0, 40))}</span></button>`; };
   const misses = id => (hist[id] || []).filter(x => !x).length;
   return `<header class="top"><h1>오답노트</h1>${syncEl()}</header><div class="scroll">
     <section class="panel"><div class="row"><div><p style="font-weight:700;font-size:17px">복습할 문제 ${ids.length}개</p><p class="sub">2번 연속 맞히면 목록에서 빠져요</p></div></div>
@@ -486,6 +508,9 @@ function vExams() {
   return `<header class="top"><h1>모의고사</h1>${syncEl()}</header><div class="scroll">
     ${EX ? `<section class="panel"><p>${esc(examName(EX.no))} ${EX.sec + 1}교시를 풀던 중이에요${EX.left != null ? ` (남은 시간 ${Math.floor(EX.left / 6e4)}분 ${pad(Math.floor(EX.left / 1000) % 60)}초)` : ''}.</p><div class="btns"><button class="primary" data-act="exresume">이어서 풀기</button><button class="primary ghost" data-act="exdrop">버리기</button></div></section>` : ''}
     <p class="sub">정식 모의고사는 실제 시험과 비슷한 구성이에요. 언어지식 30분, 문법·독해 70분이 지나면 다음 교시로 넘어가고, 청해는 문제당 한 번만 들을 수 있어요. 점수는 정답 비율로 어림한 값이고 실제 시험의 채점 방식과는 달라요.</p>
+    ${PRIV_EXAMS.length ? `<h2 class="lbl">내 문제집 모의고사</h2><p class="sub" style="margin:-6px 0 4px">종이 문제집으로 푼 결과예요. 이 계정에서만 보여요.</p>
+      <div class="list">${PRIV_EXAMS.map(e => {
+        return `<button class="part" data-exam="${e.no}"><b>📘 ${esc(e.label)}</b><span>${esc(e.sub || '')}</span><span>${dayKey(e.row.finished_at)} 풀이 · 추정 ${total(e.row)}점 / 180</span></button>`; }).join('')}</div>` : ''}
     ${['mini', 'full'].map(kind => {
       const list = EXAMS.filter(e => kind === 'mini' ? e.mini : !e.mini);
       return `<h2 class="lbl">${kind === 'mini' ? '미니 모의고사' : '정식 모의고사'}</h2>
@@ -552,7 +577,10 @@ function vExamResult() {
     <section class="panel"><div class="row"><span>${pass ? '합격권이에요' : '조금 더 해봐요'}</span><span class="big">${t}<small> / 180</small></span></div>
       <div class="score"><div><b class="${low(a)}">${a}</b><span>언어지식 ${x.lang_correct}/${x.lang_total}</span></div><div><b class="${low(b)}">${b}</b><span>독해 ${x.read_correct}/${x.read_total}</span></div><div><b class="${low(c)}">${c}</b><span>청해 ${x.listen_correct}/${x.listen_total}</span></div></div>
       <p class="sub">합격 기준은 총점 ${PASS_TOTAL}점 이상, 영역별 ${PASS_SECTION}점 이상이에요. 위 점수는 정답 비율로 계산한 추정치예요.</p></section>
-    <div class="btns">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기</button>` : ''}<button class="primary ghost" data-act="exretake" data-no="${x.exam_no}">다시 풀기</button><button class="primary ghost" data-go="exams">목록으로</button></div>
+    ${examOf(x.exam_no)?.book ? `<p class="sub">${esc(examOf(x.exam_no).note || '')}</p>` : ''}
+    <div class="btns ${examOf(x.exam_no)?.book ? 'col' : ''}">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기</button>` : ''}${examOf(x.exam_no)?.book
+      ? `${V.review.some(r => r.ok && r.flag) ? `<button class="primary ghost" data-act="exflag">헷갈린 ${V.review.filter(r => r.ok && r.flag).length}문제 보기</button>` : ''}${wrong.length ? `<button class="primary ghost" data-act="exredo">틀린 문제 다시 풀기</button>` : ''}`
+      : `<button class="primary ghost" data-act="exretake" data-no="${x.exam_no}">다시 풀기</button>`}<button class="primary ghost" data-go="exams">목록으로</button></div>
   </div>`;
 }
 
@@ -674,6 +702,13 @@ const ACT = {
     go({ name: 'quiz', ids: keepGroups(wrong.map(r => r.id)), i: 0, title: '틀린 문제 보기', mode: 'review', showScript: false, back,
       res: Object.fromEntries(wrong.map(r => [r.id, { pick: r.pick ?? -1, ok: false, seen: true }])) });
   },
+  exflag() {
+    const fl = V.review.filter(r => r.ok && r.flag), back = { ...V };
+    if (!fl.length) return;
+    go({ name: 'quiz', ids: keepGroups(fl.map(r => r.id)), i: 0, title: '헷갈린 문제 보기', mode: 'review', showScript: false, back,
+      res: Object.fromEntries(fl.map(r => [r.id, { pick: r.pick ?? -1, ok: true, seen: true }])) });
+  },
+  exredo() { startQuiz(V.review.filter(r => !r.ok).map(r => r.id), '문제집 오답 다시 풀기', 'review'); },
   exretake(b) { const e = examOf(+b.dataset.no); if (e && confirm(`${e.label}를 다시 풀까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no); },
   async pw() {
     const p = prompt('새 비밀번호 (8자 이상)'); if (!p) return;
@@ -683,7 +718,7 @@ const ACT = {
   },
   async logout() {
     if (store.queue.length && !confirm('아직 저장되지 않은 기록이 있어요. 이 기기에는 남아 있어요. 로그아웃할까요?')) return;
-    await sb.auth.signOut(); user = null; store = emptyStore(); hist = {}; EX = null; go({ name: 'auth' });
+    await sb.auth.signOut(); if (PRIV_EXAMS.length) return location.reload(); user = null; store = emptyStore(); hist = {}; EX = null; go({ name: 'auth' });
   },
   async reset() {
     if (!confirm('N3 풀이 기록과 모의고사 결과를 모두 지울까요? 되돌릴 수 없어요.')) return;
@@ -708,7 +743,8 @@ document.addEventListener('click', e => {
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');
   else if (d.exam) {
-    const e = examOf(+d.exam), past = store.exams.filter(x => x.exam_no === e.no).sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at))[0];
+    const e = examOf(+d.exam); if (e.book) return go({ name: 'examresult', row: e.row, review: examReview(e.row, e.no) });
+    const past = store.exams.filter(x => x.exam_no === e.no).sort((a, b) => new Date(b.finished_at) - new Date(a.finished_at))[0];
     if (past) go({ name: 'examresult', row: past, review: examReview(past, e.no) });
     else if (confirm(`${e.label}를 시작할까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no);
   }
