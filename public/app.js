@@ -642,7 +642,7 @@ function vocState(id) {
   if (s && s.n === d.words.length) return s;
   return { n: d.words.length, round: 1, list: d.words.map((_, k) => k), i: 0, unk: [], done: false };
 }
-function vocOpen(id) { go({ name: 'vocab', deck: id, show: false, st: vocState(id) }); }
+function vocOpen(id) { go({ name: 'vocab', deck: id, showR: false, showM: false, st: vocState(id) }); }
 function vocStep(know) {
   const st = V.st;
   if (!know) st.unk.push(st.list[st.i]);
@@ -651,7 +651,7 @@ function vocStep(know) {
     if (!st.unk.length) st.done = true;
     else { st.round++; st.list = shuffle(st.unk); st.unk = []; st.i = 0; toast(`${st.round}회독: 못 외운 ${st.list.length}개만 다시 봐요`); }
   }
-  lsSet(vocKey(V.deck), st); V.show = false; render();
+  lsSet(vocKey(V.deck), st); V.showR = V.showM = false; render();
 }
 function vVocab() {
   const d = VOCAB.find(x => x.id === V.deck), st = V.st;
@@ -662,10 +662,11 @@ function vVocab() {
   return `${head}<div class="bar blue" style="border-radius:0;height:3px;flex:none"><i style="width:${st.i / st.list.length * 100}%;border-radius:0"></i></div>
   <div class="scroll vwrap">
     <p class="sub vround">${st.round === 1 ? '1회독 · 모든 단어' : `${st.round}회독 · 못 외운 단어만`}${st.unk.length ? ` · 이번 회독에서 모른다 ${st.unk.length}개` : ''}</p>
-    <button class="vcard" data-act="vshow" lang="ja"><span class="vw">${esc(w.w)}</span>
-      ${V.show ? `${w.r && w.r !== w.w ? `<span class="vr">${esc(w.r)}</span>` : ''}<span class="vm">${esc(w.m)}</span>${w.ex ? `<span class="vex">${esc(w.ex)}</span>` : ''}` : '<span class="vtap">눌러서 읽기·뜻 보기</span>'}</button>
+    <div class="vcard" lang="ja"><span class="vw">${esc(w.w)}</span>
+      ${V.showR ? `<span class="vr">${esc(w.r || w.w)}</span>` : ''}${V.showM ? `<span class="vm">${esc(w.m)}</span>${w.ex ? `<span class="vex">${esc(w.ex)}</span>` : ''}` : ''}</div>
+    <div class="vpair"><button class="vbtn ${V.showR ? 'on' : ''}" data-act="vshowr">히라가나</button><button class="vbtn ${V.showM ? 'on' : ''}" data-act="vshowm">한글</button></div>
   </div>
-  <div class="foot two"><button class="primary ghost" data-act="vunk">모른다</button><button class="primary" data-act="vknow">안다</button></div>`;
+  <div class="foot vpair"><button class="primary ghost" data-act="vunk">모른다</button><button class="primary" data-act="vknow">안다</button></div>`;
 }
 
 function vMe() {
@@ -788,7 +789,8 @@ const ACT = {
   bkrev() { browse(bookWrong(), '문제집 풀이 · 틀린 문제 보기', 'bk-rev'); },
   bkredo() { const from = { ...V }; startQuiz(bookWrong().map(r => r.id), '문제집 풀이 · 틀린 문제 다시 풀기', 'review', null, 'bk-redo'); V.from = from; },
   voc(b) { vocOpen(b.dataset.deck); },
-  vshow() { V.show = true; render(); },
+  vshowr() { V.showR = !V.showR; render(); },
+  vshowm() { V.showM = !V.showM; render(); },
   vknow() { vocStep(true); },
   vunk() { vocStep(false); },
   vreset() { if (confirm('이 단어장을 1회독부터 다시 시작할까요?')) { lsDel(vocKey(V.deck)); vocOpen(V.deck); } },
@@ -838,8 +840,8 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (V.name === 'vocab' && !V.st.done) { // 스페이스: 뜻 보기, ←: 모른다, →: 안다
-    if (e.key === ' ') { e.preventDefault(); ACT.vshow(); } else if (e.key === 'ArrowLeft') vocStep(false); else if (e.key === 'ArrowRight') vocStep(true);
+  if (V.name === 'vocab' && !V.st.done) { // ↑: 히라가나, ↓: 한글, ←: 모른다, →: 안다
+    if (e.key === 'ArrowUp') { e.preventDefault(); ACT.vshowr(); } else if (e.key === 'ArrowDown') { e.preventDefault(); ACT.vshowm(); } else if (e.key === 'ArrowLeft') vocStep(false); else if (e.key === 'ArrowRight') vocStep(true);
     return;
   }
   if (V.name !== 'quiz' && V.name !== 'exam') return;

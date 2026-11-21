@@ -247,3 +247,7 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .vcard .vex{font-size:14px;color:var(--muted);line-height:1.6}
 .vcard .vtap{font-size:14px;color:var(--muted)}
 .vdone{align-items:center;text-align:center;margin-top:24px}
+.vpair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.vpair>*{width:100%;min-width:0}
+.vbtn{display:flex;align-items:center;justify-content:center;padding:14px 0;border-radius:var(--radius);border:1px solid var(--line);background:var(--bg);font-size:16px;font-weight:600;color:var(--ink2)}
+.vbtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
