@@ -4,6 +4,7 @@ const SB_KEY = 'sb_publishable_NXzZ41oAbjX6jckVqkfqMg_PGcL-BHN'; // 공개용 �
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const { parts: PARTS, q: QS, g: GROUPS, exams: EXAMS } = window.N3;
 const PRIV_EXAMS = []; // 로그인한 사람만 받는 개인 모의고사(문제집 풀이 결과)
+const VOCAB = []; // 로그인한 사람만 받는 개인 단어장 { id, name, words: [{ w, r, m, ex }] }
 const examOf = no => EXAMS.find(x => x.no === no) || PRIV_EXAMS.find(x => x.no === no);
 const examName = no => examOf(no)?.label || `모의고사 ${no}회`;
 const revKey = id => `${'n3'}-examrev-${id}`;
@@ -144,7 +145,10 @@ async function loadPrivate() {
     if (r.kind === 'g') GROUPS[r.item_id] = r.data;
     else if (r.kind === 'q') { if (!Q[r.item_id]) QS.push(r.data); Q[r.item_id] = r.data; if (r.data.aup) paths.push(r.data.aup); }
     else if (r.kind === 'exam' && !PRIV_EXAMS.some(x => x.no === r.data.no)) PRIV_EXAMS.push(r.data);
+    else if (r.kind === 'v' && !VOCAB.some(x => x.id === r.item_id)) VOCAB.push({ id: r.item_id, ...r.data });
   }
+  QS.sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0)); // 문제집 문항은 책 순서대로(공개 문항은 ord가 없어 그대로)
+  if (V.name === 'practice') render();
   if (!paths.length) return;
   const { data: urls } = await sb.storage.from('private-audio').createSignedUrls(paths, 60 * 60 * 12);
   for (const u of urls || []) for (const q of QS) if (q.aup && q.aup === u.path && u.signedUrl) q.au = u.signedUrl;
@@ -160,9 +164,11 @@ const isOpenWrong = id => { // 틀린 적이 있고, 그 뒤로 2번 연속 맞�
   const h = hist[id]; if (!h) return false;
   const last = h.lastIndexOf(false); return last >= 0 && h.length - 1 - last < 2;
 };
+/* 연습 문제 풀: 공개 문제 + 개인 교재 문제(drill). 문제집 모의고사 오답(src만 있음)은 오답노트·오늘의 학습으로만 나온다. */
+const inPool = q => !q.src || q.drill;
 const wrongIds = () => Object.keys(hist).filter(id => Q[id] && isOpenWrong(id));
 function partStat(k) {
-  const qs = QS.filter(q => q.part === k && !q.src); let seen = 0, last = 0;
+  const qs = QS.filter(q => q.part === k && inPool(q)); let seen = 0, last = 0;
   for (const q of qs) { const h = hist[q.id]; if (h) { seen++; if (h[h.length - 1]) last++; } }
   return { total: qs.length, seen, acc: seen ? last / seen : null };
 }
@@ -185,8 +191,8 @@ function rank(q) { // 안 푼 연습 전용 → 안 푼 모의고사 문제 → 
   if (!hist[q.id]) return examIds.has(q.id) ? 1 : 0;
   return 2;
 }
-function pickUnits(partKey, want, exclude = new Set()) {
-  const qs = QS.filter(q => q.part === partKey && !q.src && !exclude.has(q.id));
+function pickUnits(partKey, want, exclude = new Set(), book = false) {
+  const qs = QS.filter(q => q.part === partKey && (book ? q.drill : inPool(q)) && !exclude.has(q.id));
   const units = {}; for (const q of qs) (units[q.gid || q.id] ||= []).push(q);
   const lastSeen = id => { let t = 0; for (const a of store.attempts) if (a.question_id === id) t = Math.max(t, +new Date(a.answered_at)); return t; };
   const scored = shuffle(Object.values(units)).map(u => ({ u, r: rank(u[0]), t: lastSeen(u[0].id) }))
@@ -201,7 +207,8 @@ function todaySet(exclude = new Set()) {
   const ids = [];
   const add = arr => { for (const i of arr) if (ids.length < TODAY_N && !ids.includes(i) && !exclude.has(i)) ids.push(i); };
   const open = shuffle(wrongIds()); // 복습 3자리: 문제집 모의고사 오답을 2개까지 먼저
-  add([...open.filter(i => Q[i].src).slice(0, 2), ...open.filter(i => !Q[i].src)].slice(0, 3));
+  const bk = i => Q[i].src && !Q[i].drill;
+  add([...open.filter(bk).slice(0, 2), ...open.filter(i => !bk(i))].slice(0, 3));
   const weak = PARTS.filter(p => !p.group).map(p => ({ p, s: partStat(p.key) }))
     .sort((a, b) => (a.s.acc ?? .5) - (b.s.acc ?? .5) || a.s.seen / a.s.total - b.s.seen / b.s.total).slice(0, 3);
   for (const { p } of weak) add(pickUnits(p.key, 2, exclude));
@@ -404,15 +411,15 @@ function vAuth() {
 function vHome() {
   const { date, days } = nextExamDate();
   const wrong = wrongIds().length;
-  const solved = Object.keys(hist).filter(id => Q[id] && !Q[id].src).length;
+  const solved = Object.keys(hist).filter(id => Q[id] && inPool(Q[id])).length;
   const todayN = todayDone().size; // 같은 문제를 다시 풀어도 한 번만 센다
   return `<header class="top"><h1>오늘의 학습</h1>${syncEl()}</header>
   <div class="scroll">
     ${user ? `<p class="sub" style="margin-top:-8px">${esc(user.name)}님, 오늘도 한 걸음씩 가볼까요?</p>` : `<button class="notice" data-act="toauth"><span>로그인하면 기록이 계정에 저장돼요</span><span>›</span></button>`}
     <section class="panel">
       <div class="dday"><div><p class="sub">다음 JLPT</p><p style="font-weight:600">${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}</p></div><span class="big">D-${days}</span></div>
-      <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.filter(q => !q.src).length} 문제</span></div></div>
-      ${bar(solved / QS.length)}
+      <div class="stats3"><div><b>${todayN}</b><span>오늘 푼 문제</span></div><div><b>${streak()}일</b><span>연속 학습</span></div><div><b>${solved}</b><span>/ ${QS.filter(inPool).length} 문제</span></div></div>
+      ${bar(solved / (QS.filter(inPool).length || 1))}
       ${(() => { const ss = lsGet(sessKey()); if (!ss || !ss.ids?.every(id => Q[id])) return ''; const n = Object.keys(ss.res).length;
         return `<div class="resume"><button class="primary" data-act="resume">이어서 풀기 · ${esc(ss.title)} ${n}/${ss.ids.length}</button><button class="link sub" data-act="dropsess">그만두기</button></div>`; })()}
       <button class="primary ${lsGet(sessKey()) ? 'ghost' : ''}" data-act="today">${todayN >= TODAY_N ? '다음 10문제 풀기' : '오늘의 10문제 풀기'}</button>
@@ -432,21 +439,40 @@ function vHome() {
 
 function vPractice() {
   const area = V.area || '전체';
-  const list = PARTS.filter(p => area === '전체' || p.area === area);
+  const list = area === '단어' ? [] : PARTS.filter(p => area === '전체' || p.area === area);
   return `<header class="top"><h1>유형별 연습</h1>${syncEl()}</header><div class="scroll">
-    <div class="chips">${['전체', ...AREAS].map(a => `<button class="chip ${a === area ? 'on' : ''}" data-area="${a}">${a}</button>`).join('')}</div>
+    <div class="chips">${['전체', ...AREAS, ...(VOCAB.length ? ['단어'] : [])].map(a => `<button class="chip ${a === area ? 'on' : ''}" data-area="${a}">${a}</button>`).join('')}</div>
     <div class="grid">${list.map(p => {
       const s = partStat(p.key);
       return `<button class="part" data-part="${p.key}">${accPill(s.acc)}<b>${esc(p.name)}</b><span class="ja">${esc(p.ja)}</span><span>${s.seen} / ${s.total}</span>${bar(s.seen / (s.total || 1))}</button>`;
-    }).join('')}</div></div>${tabs('practice')}`;
+    }).join('')}</div>${bookPanel(area)}${area === '단어' ? vocList() : ''}</div>${tabs('practice')}`;
 }
 
-function startQuiz(ids, title, mode = 'drill', more = null) {
+/* 개인 교재 독해(이 계정에서만 받은 drill 문항) */
+function bookPanel(area) {
+  if (area !== '전체' && area !== '독해') return '';
+  const ps = PARTS.filter(p => QS.some(q => q.drill && q.part === p.key)); if (!ps.length) return '';
+  const bw = bookWrong(), solved = QS.filter(q => q.drill && q.bk).length;
+  return `<h2 class="lbl">📘 문제집 풀이</h2><p class="sub" style="margin:-6px 0 8px">종이 문제집으로 푼 독해예요. 이 계정에서만 보여요.</p>
+    ${solved ? `<section class="panel"><div class="row"><span style="font-weight:600">문제집에서 푼 ${solved}문제</span><span class="sub">맞음 ${solved - bw.length} · 틀림 ${bw.length}</span></div>
+      ${bw.length ? `<div class="btns col"><button class="primary" data-act="bkrev">틀린 ${bw.length}문제 보기${posLabel('bk-rev', bw.map(r => r.id))}</button><button class="primary ghost" data-act="bkredo">틀린 문제 다시 풀기${posLabel('bk-redo', bw.map(r => r.id))}</button></div>` : ''}</section>` : ''}
+    <div class="grid">${ps.map(p => { const qs = QS.filter(q => q.drill && q.part === p.key), seen = qs.filter(q => hist[q.id]).length;
+      return `<button class="part" data-bookpart="${p.key}"><b>${esc(p.name)}</b><span class="ja">${esc(p.ja)}</span><span>${seen} / ${qs.length}</span>${bar(seen / qs.length)}</button>`; }).join('')}</div>`;
+}
+function vocList() {
+  if (!VOCAB.length) return '<p class="sub">단어장이 없어요.</p>';
+  return `<div class="grid">${VOCAB.map(d => { const st = vocState(d.id);
+    const sub = st.done ? '다 외웠어요' : st.round === 1 && st.i === 0 ? `${d.words.length}단어` : `${st.round}회독 ${st.i}/${st.list.length}`;
+    return `<button class="part" data-act="voc" data-deck="${esc(d.id)}"><b>${esc(d.name)}</b><span class="ja">${d.words.length}단어</span><span>${sub}</span>${bar(st.done ? 1 : (st.round === 1 ? st.i / st.list.length : 1 - st.list.length / d.words.length))}</button>`; }).join('')}</div>`;
+}
+function startQuiz(ids, title, mode = 'drill', more = null, pos = null) {
   ids = keepGroups(ids);
   if (!ids.length) return toast('풀 문제가 없어요');
+  const saved = pos && posOf(pos, ids);
+  if (saved) { const first = ids.findIndex(id => !saved.res[id]); return go({ name: 'quiz', ids, i: first < 0 ? saved.i : first, title, mode, res: saved.res, showScript: false, more, pos, tags: {} }); }
   const open = new Set(wrongIds()); // 시작할 때 기준: 복습할 문제 / 전에 푼 문제
   const tags = Object.fromEntries(ids.filter(id => hist[id]).map(id => [id, open.has(id) ? 'review' : 'again']));
-  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false, more, tags });
+  go({ name: 'quiz', ids, i: 0, title, mode, res: {}, showScript: false, more, tags, pos });
   saveSess();
 }
 function vQuiz() {
@@ -500,6 +526,18 @@ function saveSess() {
   if (!left) return lsDel(sessKey());
   lsSet(sessKey(), { ids: V.ids, i: V.i, title: V.title, mode: V.mode, res: V.res, more: V.more, tags: V.tags, at: Date.now() });
 }
+/* 이름 붙은 목록(문제집 오답 보기·다시 풀기 등)은 목록마다 어디까지 풀었는지 이 기기에 남긴다. */
+const posKey = name => `n3-pos-${user ? user.id : 'guest'}-${name}`;
+function posOf(name, ids) {
+  const s = lsGet(posKey(name));
+  return s && s.ids.length === ids.length && s.ids.every((x, k) => x === ids[k]) ? s : null;
+}
+function savePos() {
+  if (V.name !== 'quiz' || !V.pos) return;
+  const done = V.back ? V.i >= V.ids.length - 1 : V.ids.every(id => V.res[id]);
+  if (done) lsDel(posKey(V.pos)); else lsSet(posKey(V.pos), { ids: V.ids, i: V.i, res: V.back ? {} : V.res, at: Date.now() });
+}
+const posLabel = (name, ids) => { const s = posOf(name, keepGroups(ids)); return s ? ` · 이어서 ${s.i + 1}/${ids.length}` : ''; };
 const examKey = () => `n3-exam-${user ? user.id : 'guest'}`;
 let EX = null;
 const scoreOf = (c, t) => t ? Math.round(c / t * 60) : 0;
@@ -578,10 +616,56 @@ function vExamResult() {
       <div class="score"><div><b class="${low(a)}">${a}</b><span>언어지식 ${x.lang_correct}/${x.lang_total}</span></div><div><b class="${low(b)}">${b}</b><span>독해 ${x.read_correct}/${x.read_total}</span></div><div><b class="${low(c)}">${c}</b><span>청해 ${x.listen_correct}/${x.listen_total}</span></div></div>
       <p class="sub">합격 기준은 총점 ${PASS_TOTAL}점 이상, 영역별 ${PASS_SECTION}점 이상이에요. 위 점수는 정답 비율로 계산한 추정치예요.</p></section>
     ${examOf(x.exam_no)?.book ? `<p class="sub">${esc(examOf(x.exam_no).note || '')}</p>` : ''}
-    <div class="btns ${examOf(x.exam_no)?.book ? 'col' : ''}">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기</button>` : ''}${examOf(x.exam_no)?.book
-      ? `${V.review.some(r => r.ok && r.flag) ? `<button class="primary ghost" data-act="exflag">헷갈린 ${V.review.filter(r => r.ok && r.flag).length}문제 보기</button>` : ''}${wrong.length ? `<button class="primary ghost" data-act="exredo">틀린 문제 다시 풀기</button>` : ''}`
+    <div class="btns ${examOf(x.exam_no)?.book ? 'col' : ''}">${wrong.length ? `<button class="primary" data-act="exreview">틀린 ${wrong.length}문제 보기${examOf(x.exam_no)?.book ? posLabel(bookPos('rev'), wrong.map(r => r.id)) : ''}</button>` : ''}${examOf(x.exam_no)?.book
+      ? `${V.review.some(r => r.ok && r.flag) ? `<button class="primary ghost" data-act="exflag">헷갈린 ${V.review.filter(r => r.ok && r.flag).length}문제 보기${posLabel(bookPos('flag'), V.review.filter(r => r.ok && r.flag).map(r => r.id))}</button>` : ''}${wrong.length ? `<button class="primary ghost" data-act="exredo">틀린 문제 다시 풀기${posLabel(bookPos('redo'), wrong.map(r => r.id))}</button>` : ''}`
       : `<button class="primary ghost" data-act="exretake" data-no="${x.exam_no}">다시 풀기</button>`}<button class="primary ghost" data-go="exams">목록으로</button></div>
   </div>`;
+}
+
+/* 내가 고른 답을 보여 주며 넘겨 보기(다시 풀지 않음). 보던 위치를 pos 이름으로 저장한다. */
+function browse(list, title, pos) {
+  if (!list.length) return;
+  const ids = keepGroups(list.map(r => r.id)), back = { ...V }, s = posOf(pos, ids);
+  const by = Object.fromEntries(list.map(r => [r.id, r]));
+  go({ name: 'quiz', ids, i: s ? Math.min(s.i, ids.length - 1) : 0, title, mode: 'review', showScript: false, back, pos,
+    res: Object.fromEntries(ids.map(id => [id, { pick: by[id].pick ?? -1, ok: by[id].ok, seen: true }])) });
+}
+const bookPos = k => `ex${V.row?.exam_no ?? ''}-${k}`;
+/* 문제집 풀이(독해): 종이로 푼 결과가 bk에 들어 있는 개인 문항 */
+const bookWrong = () => QS.filter(q => q.drill && q.bk && !q.bk.ok).map(q => ({ id: q.id, pick: q.bk.pick, ok: false }));
+
+/* ── 단어장 ───────────────────────────────────────── */
+const vocKey = id => `n3-voc-${user ? user.id : 'guest'}-${id}`;
+function vocState(id) {
+  const d = VOCAB.find(x => x.id === id);
+  const s = lsGet(vocKey(id));
+  if (s && s.n === d.words.length) return s;
+  return { n: d.words.length, round: 1, list: d.words.map((_, k) => k), i: 0, unk: [], done: false };
+}
+function vocOpen(id) { go({ name: 'vocab', deck: id, show: false, st: vocState(id) }); }
+function vocStep(know) {
+  const st = V.st;
+  if (!know) st.unk.push(st.list[st.i]);
+  st.i++;
+  if (st.i >= st.list.length) {
+    if (!st.unk.length) st.done = true;
+    else { st.round++; st.list = shuffle(st.unk); st.unk = []; st.i = 0; toast(`${st.round}회독: 못 외운 ${st.list.length}개만 다시 봐요`); }
+  }
+  lsSet(vocKey(V.deck), st); V.show = false; render();
+}
+function vVocab() {
+  const d = VOCAB.find(x => x.id === V.deck), st = V.st;
+  const head = `<header class="top sm"><button class="link" data-act="vclose">✕ 닫기</button><span class="t">${esc(d.name)}${st.done ? '' : ` · ${st.round}회독 ${st.i + 1}/${st.list.length}`}</span><button class="link sub" data-act="vreset">처음부터</button></header>`;
+  if (st.done) return `${head}<div class="scroll"><section class="panel vdone"><p class="big">다 외웠어요!</p><p class="sub">${d.words.length}단어를 ${st.round}회독 만에 모두 '안다'로 넘겼어요.</p>
+    <button class="primary" data-act="vreset">처음부터 다시 보기</button></section></div>`;
+  const w = d.words[st.list[st.i]];
+  return `${head}<div class="bar blue" style="border-radius:0;height:3px;flex:none"><i style="width:${st.i / st.list.length * 100}%;border-radius:0"></i></div>
+  <div class="scroll vwrap">
+    <p class="sub vround">${st.round === 1 ? '1회독 · 모든 단어' : `${st.round}회독 · 못 외운 단어만`}${st.unk.length ? ` · 이번 회독에서 모른다 ${st.unk.length}개` : ''}</p>
+    <button class="vcard" data-act="vshow" lang="ja"><span class="vw">${esc(w.w)}</span>
+      ${V.show ? `${w.r && w.r !== w.w ? `<span class="vr">${esc(w.r)}</span>` : ''}<span class="vm">${esc(w.m)}</span>${w.ex ? `<span class="vex">${esc(w.ex)}</span>` : ''}` : '<span class="vtap">눌러서 읽기·뜻 보기</span>'}</button>
+  </div>
+  <div class="foot two"><button class="primary ghost" data-act="vunk">모른다</button><button class="primary" data-act="vknow">안다</button></div>`;
 }
 
 function vMe() {
@@ -606,7 +690,7 @@ function vMe() {
 const viewKey = () => V.name + ':' + (V.name === 'exam' ? `${EX?.sec}-${EX?.i}` : V.i ?? '');
 function render() {
   if (V.name !== 'quiz' && V.name !== 'exam') $app.classList.remove('wide');
-  const views = { auth: vAuth, home: vHome, practice: vPractice, quiz: vQuiz, result: vResult, notes: vNotes, exams: vExams, exam: vExam, examresult: vExamResult, me: vMe };
+  const views = { vocab: vVocab, auth: vAuth, home: vHome, practice: vPractice, quiz: vQuiz, result: vResult, notes: vNotes, exams: vExams, exam: vExam, examresult: vExamResult, me: vMe };
   const keep = render.last === viewKey() ? document.querySelector('.scroll')?.scrollTop : null;
   $app.innerHTML = views[V.name]();
   render.last = viewKey();
@@ -629,31 +713,33 @@ function pick(i) {
   if (V.name === 'quiz') {
     const q = Q[V.ids[V.i]]; if (V.res[q.id]) return;
     const ok = i === q.a; V.res[q.id] = { pick: i, ok }; TTS.stop();
-    record(q, ok, V.mode); saveSess(); render();
+    record(q, ok, V.mode); saveSess(); savePos(); render();
   } else if (V.name === 'exam') {
     const q = Q[EX.sections[EX.sec][EX.i]]; EX.ans[q.id] = i; lsSet(examKey(), EX); render();
   }
 }
 function next() {
-  if (V.i + 1 < V.ids.length) { V.i++; V.showScript = false; TTS.stop(); saveSess(); render(); document.querySelector('.scroll').scrollTo(0, 0); }
-  else { if (sessOwn()) lsDel(sessKey()); go({ ...V, name: 'result' }); }
+  if (V.i + 1 < V.ids.length) { V.i++; V.showScript = false; TTS.stop(); saveSess(); savePos(); render(); document.querySelector('.scroll').scrollTo(0, 0); }
+  else { if (sessOwn()) lsDel(sessKey()); if (V.pos) lsDel(posKey(V.pos)); go({ ...V, name: 'result' }); }
 }
 const ACT = {
   async mode(b) { V.mode = b.dataset.m; V.err = ''; render(); },
   guest() { user = null; store = { ...emptyStore(), ...(lsGet(key()) || {}) }; indexAttempts(); lsSet('n3-guest', true); go('home'); },
   toauth() { lsDel('n3-guest'); go({ name: 'auth', mode: 'signup' }); },
   today() { startQuiz(todaySet(todayDone()), '오늘의 학습', 'drill', { kind: 'today' }); },
-  prev() { if (V.i > 0) { V.i--; V.showScript = false; TTS.stop(); saveSess(); render(); document.querySelector('.scroll').scrollTo(0, 0); } },
+  prev() { if (V.i > 0) { V.i--; V.showScript = false; TTS.stop(); saveSess(); savePos(); render(); document.querySelector('.scroll').scrollTo(0, 0); } },
   more() {
     const m = V.more, seen = new Set([...(m.seen || []), ...V.ids]);
     if (m.kind === 'today') startQuiz(todaySet(new Set([...seen, ...todayDone()])), '오늘의 학습', 'drill', { kind: 'today', seen: [...seen] });
+    else if (m.book) startQuiz(pickUnits(m.part, 3, seen, true), '📘 ' + PART[m.part].name, 'drill', { part: m.part, book: true, seen: [...seen] });
     else startQuiz(pickUnits(m.part, PART[m.part].group ? 5 : 10, seen), PART[m.part].name, 'drill', { part: m.part, seen: [...seen] });
   },
   hltoggle() { V.hlOn = !V.hlOn; getSelection()?.removeAllRanges(); render(); },
   hlclear() { if (confirm('이 문제의 형광펜을 모두 지울까요?')) setMarks(curQ().id, {}); },
   next,
   quit() {
-    if (V.back) return go(V.back);
+    if (V.back) { savePos(); if (V.pos && V.i < V.ids.length - 1) toast('보던 곳을 저장했어요'); return go(V.back); }
+    if (V.pos) { savePos(); const left = V.ids.some(id => !V.res[id]); if (left) { toast('풀던 곳을 저장했어요. 다시 누르면 이어서 풀어요'); return go(V.from || 'home'); } }
     const answered = Object.keys(V.res).length, left = V.ids.length - answered;
     const own = sessOwn();
     if (own && left && answered) { saveSess(); toast('풀던 곳을 저장했어요. 홈에서 이어서 풀 수 있어요'); go('home'); }
@@ -696,19 +782,17 @@ const ACT = {
     const left = EX.sections[EX.sec].filter(id => EX.ans[id] == null).length;
     if (confirm(left ? `안 푼 문제가 ${left}개 있어요. 끝낼까요?` : '이번 교시를 끝낼까요?')) nextSection();
   },
-  exreview() { // 내가 고른 답과 해설을 바로 보여 준다(다시 풀지 않음)
-    const wrong = V.review.filter(r => !r.ok), back = { ...V };
-    if (!wrong.length) return;
-    go({ name: 'quiz', ids: keepGroups(wrong.map(r => r.id)), i: 0, title: '틀린 문제 보기', mode: 'review', showScript: false, back,
-      res: Object.fromEntries(wrong.map(r => [r.id, { pick: r.pick ?? -1, ok: false, seen: true }])) });
-  },
-  exflag() {
-    const fl = V.review.filter(r => r.ok && r.flag), back = { ...V };
-    if (!fl.length) return;
-    go({ name: 'quiz', ids: keepGroups(fl.map(r => r.id)), i: 0, title: '헷갈린 문제 보기', mode: 'review', showScript: false, back,
-      res: Object.fromEntries(fl.map(r => [r.id, { pick: r.pick ?? -1, ok: true, seen: true }])) });
-  },
-  exredo() { startQuiz(V.review.filter(r => !r.ok).map(r => r.id), '문제집 오답 다시 풀기', 'review'); },
+  exreview() { browse(V.review.filter(r => !r.ok), '틀린 문제 보기', bookPos('rev')); },
+  exflag() { browse(V.review.filter(r => r.ok && r.flag), '헷갈린 문제 보기', bookPos('flag')); },
+  exredo() { const from = { ...V }; startQuiz(V.review.filter(r => !r.ok).map(r => r.id), '문제집 오답 다시 풀기', 'review', null, bookPos('redo')); V.from = from; },
+  bkrev() { browse(bookWrong(), '문제집 풀이 · 틀린 문제 보기', 'bk-rev'); },
+  bkredo() { const from = { ...V }; startQuiz(bookWrong().map(r => r.id), '문제집 풀이 · 틀린 문제 다시 풀기', 'review', null, 'bk-redo'); V.from = from; },
+  voc(b) { vocOpen(b.dataset.deck); },
+  vshow() { V.show = true; render(); },
+  vknow() { vocStep(true); },
+  vunk() { vocStep(false); },
+  vreset() { if (confirm('이 단어장을 1회독부터 다시 시작할까요?')) { lsDel(vocKey(V.deck)); vocOpen(V.deck); } },
+  vclose() { go({ name: 'practice', area: '단어' }); },
   exretake(b) { const e = examOf(+b.dataset.no); if (e && confirm(`${e.label}를 다시 풀까요? 약 ${e.minutes}분이 걸려요.`)) startExam(e.no); },
   async pw() {
     const p = prompt('새 비밀번호 (8자 이상)'); if (!p) return;
@@ -740,6 +824,7 @@ document.addEventListener('click', e => {
   if (d.go) go(d.go);
   else if (d.area) { V.area = d.area; render(); }
   else if (d.part) startQuiz(pickUnits(d.part, PART[d.part].group ? 5 : 10), PART[d.part].name, 'drill', { part: d.part });
+  else if (d.bookpart) startQuiz(pickUnits(d.bookpart, 3, new Set(), true), '📘 ' + PART[d.bookpart].name, 'drill', { part: d.bookpart, book: true });
   else if (d.pick != null) pick(+d.pick);
   else if (d.review) startQuiz([d.review], '다시 보기', 'review');
   else if (d.exam) {
@@ -753,6 +838,10 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (V.name === 'vocab' && !V.st.done) { // 스페이스: 뜻 보기, ←: 모른다, →: 안다
+    if (e.key === ' ') { e.preventDefault(); ACT.vshow(); } else if (e.key === 'ArrowLeft') vocStep(false); else if (e.key === 'ArrowRight') vocStep(true);
+    return;
+  }
   if (V.name !== 'quiz' && V.name !== 'exam') return;
   if (/^[1-4]$/.test(e.key)) document.querySelector(`[data-pick="${+e.key - 1}"]`)?.click();
   if (e.key === 'Enter' && V.name === 'quiz' && V.res[V.ids[V.i]]) next();

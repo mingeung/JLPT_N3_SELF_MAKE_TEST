@@ -237,3 +237,13 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .pill.src{background:#FFF3D6;color:#8A5A00}
 .btns.col{flex-direction:column}
 .btns.col>button{width:100%}
+/* 단어장 */
+.vwrap{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding-top:24px}
+.vround{text-align:center}
+.vcard{background:var(--surface);border-radius:var(--radius);min-height:300px;padding:28px 20px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+.vcard .vw{font-size:44px;font-weight:700;letter-spacing:-.02em;line-height:1.2;word-break:keep-all}
+.vcard .vr{font-size:22px;color:var(--accent);font-weight:600}
+.vcard .vm{font-size:19px;font-weight:600;color:var(--ink)}
+.vcard .vex{font-size:14px;color:var(--muted);line-height:1.6}
+.vcard .vtap{font-size:14px;color:var(--muted)}
+.vdone{align-items:center;text-align:center;margin-top:24px}
