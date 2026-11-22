@@ -640,6 +640,11 @@ function vocState(id) {
   const d = VOCAB.find(x => x.id === id);
   const s = lsGet(vocKey(id));
   if (s && s.n === d.words.length) return s;
+  if (s && s.n < d.words.length) { // 단어가 뒤에 추가됐으면 진행은 그대로 두고 새 단어만 이어 붙인다
+    const add = d.words.slice(s.n).map((_, k) => s.n + k);
+    if (s.done) Object.assign(s, { done: false, list: add, i: 0 }); else s.list = s.list.concat(add);
+    s.n = d.words.length; return s;
+  }
   return { n: d.words.length, round: 1, list: d.words.map((_, k) => k), i: 0, unk: [], done: false };
 }
 function vocOpen(id) { go({ name: 'vocab', deck: id, showR: false, showM: false, st: vocState(id) }); }
