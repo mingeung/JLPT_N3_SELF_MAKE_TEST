@@ -251,3 +251,8 @@ details>p,details>div{margin-top:8px;color:var(--ink2);font-size:15px;line-heigh
 .vpair>*{width:100%;min-width:0}
 .vbtn{display:flex;align-items:center;justify-content:center;padding:14px 0;border-radius:var(--radius);border:1px solid var(--line);background:var(--bg);font-size:16px;font-weight:600;color:var(--ink2)}
 .vbtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+
+.qtools{display:flex;flex-direction:column;gap:4px;margin-top:14px;border-top:1px solid #E3E5FB;padding-top:8px}
+.qtools .memo{border-top:0;padding-top:0}
+.qtools .memo summary{font-size:14px;font-weight:600;color:var(--ink2);cursor:pointer;padding:4px 0}
+.qtools .memo textarea{margin-top:6px}
